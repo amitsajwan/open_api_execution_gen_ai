@@ -89,6 +89,9 @@ class BotState(BaseModel):
     
     # Internal working memory
     scratchpad: Dict[str, Any] = Field(default_factory=dict, description="Persistent memory for intermediate results, reasoning, history etc.")
+    plan: List[str] = []
+    current_step: int = 0
+    results: List[Any] = []
 
     class Config:
         # Allow extra fields in scratchpad without validation errors

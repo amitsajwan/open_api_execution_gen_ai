@@ -34,7 +34,7 @@ ALL_POSSIBLE_NODE_NAMES = [
     "handle_unknown",
     "handle_loop",
     # Add validate_graph if you want it as an explicit step
-    # "validate_graph", # Assuming validate_graph is in core_logic
+    # "validate_graph", # Assuming validate_logic is in core_logic
 ]
 
 def build_graph(router_llm: Any, worker_llm: Any) -> Any:
@@ -53,7 +53,10 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     def wrap_core_logic_method(fn):
         def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             state = BotState.model_validate(state_dict)
-            logger.debug(f"Executing core_logic node: {fn.__name__}")
+            node_name = fn.__name__ # Get the original function name
+            logger.debug(f"Executing core_logic node: {node_name}")
+            state.scratchpad['last_executed_node'] = node_name # Track last executed node
+
             try:
                 # Call the actual core_logic method
                 # Assuming core_logic methods return a BotState instance or a dictionary
@@ -61,7 +64,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
                 # Ensure the result is a dictionary (model_dump) if it's a Pydantic model
                 return result.model_dump() if isinstance(result, BotState) else result
             except Exception as e:
-                logger.error(f"Error in core_logic node {fn.__name__}: {e}", exc_info=True)
+                logger.error(f"Error in core_logic node {node_name}: {e}", exc_info=True)
                 # Capture error in state for potential error handling or logging
                 state.scratchpad['last_error'] = str(e)
                 # Return the modified state as a dictionary
@@ -77,31 +80,41 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     def planner_node(state: BotState) -> Dict[str, Any]:
         """
         Analyzes user query and current state using an LLM to decide the next action.
+        Considers the outcome of the previous step.
         Possible outcomes:
         - Route to a core_logic graph building step (e.g., generate_execution_graph).
         - Set state.plan (list of operationIds) and route to the executor.
         - Route to handle_unknown or handle_loop.
+        - Route to responder if the query seems fulfilled.
         Sets state.scratchpad['planner_decision'] to indicate the chosen path.
         """
         logger.debug("---PLANNER NODE---")
         query = state.user_input
         execution_graph = state.execution_graph
         openapi_schema = state.openapi_schema
+        last_executed_node = state.scratchpad.get('last_executed_node') # Get the node that ran before planner
+        last_error = state.scratchpad.get('last_error') # Get any error from the previous node
+
         logger.debug(f"User Query: {query}")
         logger.debug(f"Execution Graph Exists: {execution_graph is not None}")
         logger.debug(f"OpenAPI Schema Exists: {openapi_schema is not None}")
         logger.debug(f"Loop Counter: {state.loop_counter}") # Check loop counter from router
+        logger.debug(f"Last Executed Node: {last_executed_node}")
+        logger.debug(f"Last Error: {last_error}")
+
 
         # --- LLM Planning Logic ---
         # Build the prompt for the LLM
         prompt_context = "Analyze the user's request and the current state of the system to determine the next best action."
 
-        # Describe the current state
+        # Describe the current state, including the outcome of the previous step
         state_description = f"""
 Current State:
 - User Input: "{query}"
 - OpenAPI Specification Loaded: {'Yes' if openapi_schema else 'No'}
 - Execution Graph Exists: {'Yes' if execution_graph else 'No'}
+- Last Executed Node: {last_executed_node or 'None'}
+- Last Error Encountered: {last_error or 'None'}
 """
         if execution_graph:
              state_description += f"- Execution Graph Description: {execution_graph.description or 'No description available.'}\n"
@@ -117,6 +130,11 @@ Current State:
              # For simplicity, we'll just note that the schema is available.
              state_description += "- OpenAPI Schema is loaded and available for analysis/graph building.\n"
 
+        # Add information about the outcome of the last step if relevant
+        if last_executed_node == "identify_apis" and state.identified_apis is not None:
+             state_description += f"- Outcome of identify_apis: Found {len(state.identified_apis)} APIs.\n"
+        # Add similar checks for other relevant nodes (e.g., parse_openapi_spec, generate_execution_graph)
+
 
         # Describe the possible actions (nodes the LLM can route to)
         # Map node names to user-friendly descriptions of the action they perform.
@@ -130,6 +148,7 @@ Current State:
             "get_graph_json": "Output the JSON representation of the existing execution graph.",
             "handle_unknown": "Respond to the user when the request is unclear or cannot be fulfilled in the current state.",
             "handle_loop": "Respond to the user when the system appears to be stuck in a loop.",
+            "responder": "Generate the final response to the user based on the results or current state.", # Explicitly include responder as a possible action
             # Add descriptions for validate_graph, add_graph_edge if used
             # "validate_graph": "Validate the structure of the existing execution graph (e.g., check for cycles).",
             # "add_graph_edge": "Add a new dependency edge between two nodes in the existing execution graph based on user instructions.",
@@ -137,9 +156,11 @@ Current State:
 
         actions_description = "Available Actions (choose one to route to):\n" + "\n".join([f"- `{name}`: {desc}" for name, desc in available_actions.items()])
 
-        # Instruct the LLM on the desired output format
+        # Instruct the LLM on the desired output format and decision logic
         output_instruction = """
 Based on the user input and the current state, determine the single best 'next_action' from the Available Actions.
+Crucially, consider the 'Last Executed Node' and 'Last Error Encountered'. If the previous action successfully addressed the user's input, the `next_action` should likely be `responder`.
+
 If the 'next_action' is `executor`, you MUST also provide a `plan` which is a JSON list of `operationId` strings from the execution graph nodes, representing the sequence of API calls to make. You should also extract any relevant `parameters` from the user query needed for these API calls and return them as a JSON object where keys are operationIds and values are parameter dictionaries.
 If the 'next_action' is `generate_execution_graph`, capture the user's goal/instructions for graph generation.
 For all other `next_action` values, the `plan` and `parameters` fields are optional but can be included if relevant.
@@ -168,7 +189,16 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              planner_decision = "handle_loop"
              reasoning = "Detected potential loop based on router's loop counter."
              logger.info("Planner: Routing to handle_loop due to loop counter.")
-        else:
+        elif last_error:
+             # If the previous step had an error, maybe route to handle_unknown or responder with error
+             # For now, let's route to responder, which can report the error from scratchpad
+             planner_decision = "responder"
+             reasoning = f"Previous node ({last_executed_node}) reported an error."
+             logger.warning(f"Planner: Routing to responder due to error in {last_executed_node}.")
+             # Clear the last_error after handling it
+             if 'last_error' in state.scratchpad:
+                  del state.scratchpad['last_error']
+        else: # No loop detected and no previous error
             try:
                 # --- Call the LLM ---
                 # Use the worker_llm or a dedicated router_llm for this planning step
@@ -277,6 +307,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         execution_graph = state.execution_graph # Needed to get node details like summary/description
         openapi_schema = state.openapi_schema # Needed to get full API path, method, parameters
         extracted_params = state.extracted_params
+
+        state.scratchpad['last_executed_node'] = "executor" # Track last executed node
 
         # Check if execution is complete (router handles the transition based on this)
         if not plan or current_step >= len(plan):
@@ -518,6 +550,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              return "generate_payloads"
         elif decision == "handle_loop":
              return "handle_loop"
+        elif decision == "responder": # Planner can now explicitly route to responder
+             return "responder"
         # Add validate_graph and add_graph_edge if used
         # elif decision == "validate_graph":
         #      return "validate_graph"
@@ -544,6 +578,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
             "generate_payloads": "generate_payloads",
             "handle_unknown": "handle_unknown",
             "handle_loop": "handle_loop",
+            "responder": "responder", # Added responder as a possible transition
             # Add validate_graph and add_graph_edge if used
             # "validate_graph": "validate_graph",
             # "add_graph_edge": "add_graph_edge",
@@ -570,6 +605,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
 
     for node_name in CORE_LOGIC_TO_PLANNER:
         if node_name in tool_methods: # Ensure the node exists
+             # Route these nodes to the planner for the next decision
              builder.add_edge(node_name, "planner")
              logger.debug(f"Added edge: {node_name} -> planner")
 
@@ -585,6 +621,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
 
     for node_name in CORE_LOGIC_TO_RESPONDER:
          if node_name in tool_methods: # Ensure the node exists
+              # Route these nodes directly to the responder
               builder.add_edge(node_name, "responder")
               logger.debug(f"Added edge: {node_name} -> responder")
 

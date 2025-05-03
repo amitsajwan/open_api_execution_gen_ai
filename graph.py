@@ -120,6 +120,8 @@ Current State:
              state_description += f"- Outcome of parse_openapi_spec: Successfully parsed OpenAPI schema.\n"
         elif last_executed_node == "generate_execution_graph" and state.execution_graph:
              state_description += f"- Outcome of generate_execution_graph: Successfully generated execution graph.\n"
+        elif last_executed_node == "generate_payloads" and state.generated_payloads:
+             state_description += f"- Outcome of generate_payloads: Successfully generated example payloads.\n"
         # Add similar checks for other relevant nodes
 
 

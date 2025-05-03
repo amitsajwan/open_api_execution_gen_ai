@@ -1,0 +1,18 @@
+{
+  "session_id": "7519d908-4773-434e-9001-212c820fbc3f",
+  "user_input": "what all apis are there",
+  "openapi_spec_text": null,
+  "openapi_schema": null,
+  "schema_cache_key": null,
+  "identified_apis": null,
+  "generated_payloads": null,
+  "payload_generation_instructions": null,
+  "execution_graph": null,
+  "graph_generation_instructions": null,
+  "intent": "handle_unknown",
+  "extracted_params": null,
+  "response": null,
+  "scratchpad": {
+    "reasoning_log": "\n---\nTool: Router (Intent)\nDetails: Input: 'what all apis are there'. Determined Intent: handle_unknown\n---\n"
+  }
+}

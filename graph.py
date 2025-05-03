@@ -1,6 +1,6 @@
 import logging
 from typing import Any, Dict
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, START
 from langgraph.checkpoint.memory import MemorySaver
 
 from models import BotState
@@ -10,30 +10,30 @@ from router import OpenAPIRouter, AVAILABLE_INTENTS
 logger = logging.getLogger(__name__)
 
 def build_graph(router_llm: Any, worker_llm: Any) -> Any:
-    logger.info("Building LangGraph...")
-
+    """
+    Builds a LangGraph StateGraph with conditional routing directly from START and after each tool node.
+    """
     core_logic = OpenAPICoreLogic(worker_llm)
     router = OpenAPIRouter(router_llm)
 
-    # Use StateGraph (Pydantic model BotState)  
+    # Initialize StateGraph with Pydantic state schema
     builder = StateGraph(BotState)
 
-    # 1) Router node (BotState → str)
-    builder.add_node("router", router.route)
-    logger.debug("Added node: router")
-
-    # 2) Core‑logic adapter: BotState→BotState  →  dict→dict
+    # Wrap core logic methods (BotState -> BotState or dict) into nodes (dict -> dict)
     def wrap_method(fn):
         def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-            # Rehydrate Pydantic model
+            # Rehydrate Pydantic model from raw dict
             state = BotState.model_validate(state_dict)
-            # Execute your logic (returns BotState)
-            new_state = fn(state)
-            # Dump to plain dict for LangGraph
-            return new_state.model_dump()
+            # Execute core logic (may return BotState or dict)
+            result = fn(state)
+            # If result is already a dict, return it directly
+            if isinstance(result, dict):
+                return result
+            # Otherwise assume it's a BotState and serialize
+            return result.model_dump()
         return node
 
-    # 3) Register all tool methods through the wrapper
+    # Register core logic as nodes
     tool_methods = {
         "parse_openapi_spec": core_logic.parse_openapi_spec,
         "identify_apis": core_logic.identify_apis,
@@ -45,26 +45,29 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         "get_graph_json": core_logic.get_graph_json,
         "handle_unknown": core_logic.handle_unknown,
     }
-
-    for intent_name, method in tool_methods.items():
-        if intent_name in AVAILABLE_INTENTS:
-            builder.add_node(intent_name, wrap_method(method))
-            logger.debug(f"Added wrapped node: {intent_name}")
+    for name, fn in tool_methods.items():
+        if name in AVAILABLE_INTENTS:
+            builder.add_node(name, wrap_method(fn))
+            logger.debug(f"Added node: {name}")
         else:
-            logger.warning(f"Skipping unknown intent: {intent_name}")
+            logger.warning(f"Skipping unknown intent: {name}")
 
-    # 4) Entry point & edges
-    builder.set_entry_point("router")
+    # Conditional entry: route from START to first tool based on intent
     builder.add_conditional_edges(
-        "router",
-        lambda state: state.intent,
+        START,
+        router.route,
         {intent: intent for intent in AVAILABLE_INTENTS}
     )
-    for intent_name in tool_methods:
-        if intent_name in AVAILABLE_INTENTS:
-            builder.add_edge(intent_name, "router")
 
-    # 5) Compile with memory checkpointing
+    # After each tool node, route again
+    for intent in AVAILABLE_INTENTS:
+        builder.add_conditional_edges(
+            intent,
+            router.route,
+            {i: i for i in AVAILABLE_INTENTS}
+        )
+
+    # Compile graph with in-memory checkpointing
     app = builder.compile(checkpointer=MemorySaver())
     logger.info("LangGraph compiled successfully.")
     return app

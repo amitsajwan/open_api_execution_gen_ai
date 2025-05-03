@@ -36,21 +36,82 @@ class OpenAPICoreLogic:
         logger.info("OpenAPICoreLogic initialized.")
 
     def _get_relevant_schema_text(self, schema: Dict[str, Any], max_length: int = 8000) -> str:
-        """Extracts relevant parts of the schema, truncating if necessary."""
-        # Simple truncation for now, could be smarter (e.g., only paths/components)
-        schema_str = json.dumps(schema, indent=2)
-        if len(schema_str) > max_length:
-            logger.warning(f"Schema text truncated to {max_length} characters.")
-            # Try to keep basic structure
-            truncated_str = schema_str[:max_length]
-            # Find the last complete line
-            last_newline = truncated_str.rfind('\n')
+        """
+        Generates a structured, human-readable summary of the OpenAPI schema
+        for use in LLM prompts. Prioritizes key information like title, version,
+        paths, operations, summaries, and parameters.
+        """
+        if not schema:
+            return "No OpenAPI schema available."
+
+        summary_parts = []
+
+        # Add basic info
+        info = schema.get('info', {})
+        title = info.get('title', 'Untitled API')
+        version = info.get('version', 'N/A')
+        summary_parts.append(f"API Title: {title}")
+        summary_parts.append(f"Version: {version}\n")
+
+        # Summarize paths and operations
+        paths = schema.get('paths', {})
+        if not paths:
+            summary_parts.append("No paths defined in the schema.")
+        else:
+            summary_parts.append("Available Paths and Operations:")
+            for path, methods in paths.items():
+                summary_parts.append(f"- Path: {path}")
+                # Iterate through HTTP methods for this path
+                for method, operation in methods.items():
+                    if isinstance(operation, dict): # Ensure it's an operation object
+                        operation_id = operation.get('operationId', 'N/A')
+                        op_summary = operation.get('summary', 'No summary available.')
+                        description = operation.get('description', '')
+
+                        op_line = f"  - {method.upper()}: {operation_id} - {op_summary}"
+                        summary_parts.append(op_line)
+
+                        # Briefly mention parameters
+                        parameters = operation.get('parameters')
+                        if parameters:
+                             param_types = []
+                             for param in parameters:
+                                 if isinstance(param, dict) and 'in' in param:
+                                     param_types.append(param['in'])
+                             if param_types:
+                                 summary_parts.append(f"    Parameters: {', '.join(set(param_types))}") # Use set to get unique types
+
+                        # Briefly mention request body
+                        request_body = operation.get('requestBody')
+                        if request_body:
+                            summary_parts.append("    Request Body: Yes")
+
+                        # Briefly mention responses
+                        responses = operation.get('responses')
+                        if responses:
+                            response_codes = ", ".join(responses.keys())
+                            summary_parts.append(f"    Responses: {response_codes}")
+
+                        # Add description if concise
+                        if description and len(description) < 100: # Limit description length
+                             summary_parts.append(f"    Description: {description}")
+
+
+        # Join parts and truncate if necessary
+        full_summary = "\n".join(summary_parts)
+
+        if len(full_summary) > max_length:
+            logger.warning(f"Schema summary truncated to {max_length} characters.")
+            # Truncate gracefully, trying not to cut in the middle of a line
+            truncated_summary = full_summary[:max_length]
+            last_newline = truncated_summary.rfind('\n')
             if last_newline != -1:
-                 truncated_str = truncated_str[:last_newline] + "\n... (truncated)"
+                 truncated_summary = truncated_summary[:last_newline] + "\n... (truncated summary)"
             else:
-                 truncated_str = truncated_str + "... (truncated)"
-            return truncated_str
-        return schema_str
+                 truncated_summary = truncated_summary + "... (truncated summary)"
+            return truncated_summary
+        return full_summary
+
 
     # --- Tool Methods (Designed as Graph Nodes) ---
 
@@ -87,18 +148,20 @@ class OpenAPICoreLogic:
         # If not cached, use LLM to parse
         state.update_scratchpad_reason(tool_name, "Schema not found in cache. Using LLM to parse.")
         logger.info("Parsing OpenAPI schema using LLM.")
+        # Instruct LLM to parse and resolve, outputting ONLY JSON
         prompt = f"""
-        Parse the following OpenAPI specification text into a resolved JSON object.
-        Ensure all internal `$ref` links are resolved if possible.
-        Output ONLY the resulting JSON object, without any surrounding text or markdown formatting.
+        Parse the following OpenAPI specification text (which can be in YAML or JSON format) into a fully resolved JSON object.
+        Ensure all internal `$ref` links are resolved if possible, embedding the referenced schema objects directly.
+        Handle external references (`$ref` to URLs or local files) by including a note or placeholder if full resolution is not possible, but prioritize resolving internal references.
+        Output ONLY the resulting JSON object, without any surrounding text, markdown formatting, or conversational remarks.
 
         OpenAPI Specification Text:
-        ```yaml_or_json
+        ```
         {state.openapi_spec_text[:15000]}
         ```
         { "... (Input specification truncated)" if len(state.openapi_spec_text) > 15000 else "" }
 
-        Parsed JSON Object:
+        Parsed and Resolved JSON Object:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
@@ -143,19 +206,20 @@ class OpenAPICoreLogic:
             logger.error("identify_apis called without openapi_schema.")
             return state # Return state instance
 
+        # Use the enhanced schema summary
         schema_summary = self._get_relevant_schema_text(state.openapi_schema)
         # Use graph_generation_instructions or user_input as context for identification
         user_context = state.graph_generation_instructions or state.user_input or "general analysis"
 
         prompt = f"""
-        Analyze the following OpenAPI schema summary and identify the key API endpoints (operations) relevant to the user's context.
-        User Context: "{user_context}"
+        Analyze the following OpenAPI schema summary and identify the key API endpoints (operations) that are potentially relevant to the user's goal or for general understanding.
+        Consider the user's goal if provided: "{user_context}"
         For each identified API, extract its 'operationId', 'summary', HTTP 'method', and 'path'.
         Output ONLY a JSON list of objects, where each object represents an identified API endpoint.
         Example format: `[ {{"operationId": "getUser", "summary": "Get user details", "method": "get", "path": "/users/{{userId}}"}}, ... ]`
 
         OpenAPI Schema Summary:
-        ```json
+        ```
         {schema_summary}
         ```
 
@@ -249,9 +313,10 @@ class OpenAPICoreLogic:
              logger.error("generate_payloads called with no APIs to process.")
              return state # Return state instance
 
+        # Use the enhanced schema summary
         schema_summary = self._get_relevant_schema_text(state.openapi_schema)
         api_list_str = json.dumps(apis_to_process, indent=2)
-        instructions = instructions or "Generate typical example payloads." # Final fallback instruction
+        payloads_str = json.dumps(state.generated_payloads or "No payloads generated yet", indent=2)
 
         prompt = f"""
         Based on the OpenAPI schema summary and the list of target API operations below, generate example request payloads.
@@ -261,7 +326,7 @@ class OpenAPICoreLogic:
         Output ONLY a single JSON object where keys are the 'operationId' from the input list, and values are the generated example payloads (or null if no payload is applicable/needed, e.g., for simple GETs with no body).
 
         OpenAPI Schema Summary:
-        ```json
+        ```
         {schema_summary}
         ```
 
@@ -319,7 +384,13 @@ class OpenAPICoreLogic:
         user_goal = state.user_input or "Determine a logical execution flow." # Default goal
         graph_instructions = "Consider typical CRUD dependencies (Create->Read->Update->Read->Delete) and data flow (e.g., an ID created in one step is used in the next)." # Default instructions
 
-        if state.extracted_params:
+        # Use graph_generation_instructions if already set by planner, otherwise check extracted_params
+        if state.graph_generation_instructions:
+             logger.debug("Using graph generation instructions from state.")
+             # For now, assume state.graph_generation_instructions is the primary instruction source
+             # A more robust approach might parse it into goal/instructions fields
+             pass
+        elif state.extracted_params:
             try:
                 params = GenerateGraphParams.model_validate(state.extracted_params)
                 if params.goal: user_goal = params.goal
@@ -327,13 +398,13 @@ class OpenAPICoreLogic:
                 state.graph_generation_instructions = f"Goal: {user_goal}\nInstructions: {graph_instructions}" # Store combined
                 logger.debug(f"Graph generation params from extracted_params: Goal='{user_goal}', Instructions='{graph_instructions}'")
             except Exception as e:
-                logger.warning(f"Could not parse GenerateGraphParams from extracted_params: {e}. Using state fields.")
-                # Fallback to instructions/goal potentially set by planner
-                user_goal = state.graph_generation_instructions or state.extracted_params.get("goal", user_goal)
-                graph_instructions = state.graph_generation_instructions or state.extracted_params.get("instructions", graph_instructions)
+                logger.warning(f"Could not parse GenerateGraphParams from extracted_params: {e}. Using default behavior.")
+                user_goal = state.extracted_params.get("goal", user_goal) or state.user_input
+                graph_instructions = state.extracted_params.get("instructions", graph_instructions) or "Consider typical dependencies and data flow."
                 state.graph_generation_instructions = f"Goal: {user_goal}\nInstructions: {graph_instructions}"
 
 
+        # Use the enhanced schema summary
         schema_summary = self._get_relevant_schema_text(state.openapi_schema)
         api_list_str = json.dumps(state.identified_apis or "All APIs in schema", indent=2)
         payloads_str = json.dumps(state.generated_payloads or "No payloads generated yet", indent=2)
@@ -345,7 +416,7 @@ class OpenAPICoreLogic:
         1. User Goal/Task: {user_goal}
         2. Specific Instructions: {graph_instructions}
         3. OpenAPI Schema Summary:
-            ```json
+            ```
             {schema_summary}
             ```
         4. Identified Relevant APIs (or 'All APIs in schema'):
@@ -365,7 +436,7 @@ class OpenAPICoreLogic:
         5. Edges: Each edge should represent a dependency or sequential step. Define `from_node` and `to_node` using the operationIds. Add a brief `description` for the edge if the dependency reason is clear (e.g., "Uses ID from create response").
         6. Ensure the graph is a DAG (no circular dependencies). If a potential cycle exists (e.g., repeatedly checking status), represent it logically or note the pattern in the graph description.
         7. Provide a brief natural language `description` of the overall workflow represented by the graph.
-        8. when we need to call same operation multiple times, say we need to verify getById, after create , update delete , it will be a different node with distnict operationId
+
         Output Format:
         Output ONLY a single JSON object matching this structure:
         ```json
@@ -381,12 +452,9 @@ class OpenAPICoreLogic:
 
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Expecting a GraphOutput structure
             graph_output = parse_llm_json_output(llm_response, expected_model=GraphOutput)
 
             if graph_output and isinstance(graph_output, GraphOutput):
-                # Basic validation: Check if nodes and edges reference valid operationIds
-                # (More thorough validation could cross-reference with schema)
                 node_ids = {node.operationId for node in graph_output.nodes}
                 valid_graph_structure = True
                 invalid_edge_msgs = []
@@ -395,19 +463,18 @@ class OpenAPICoreLogic:
                           invalid_edge_msgs.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
                           valid_graph_structure = False
 
-                # Check for cycles
                 is_acyclic, cycle_msg = check_for_cycles(graph_output)
 
                 if not is_acyclic:
                     state.response = f"Error: LLM generated a graph with cycles. {cycle_msg} Cannot accept cyclic graph."
                     state.update_scratchpad_reason(tool_name, f"Graph generation failed: Cycle detected. {cycle_msg}")
                     logger.error(f"LLM generated cyclic graph: {cycle_msg}")
-                    state.execution_graph = None # Reject cyclic graph
+                    state.execution_graph = None
                 elif not valid_graph_structure:
                     state.response = f"Error: LLM generated a graph with invalid edge references. Details: {'; '.join(invalid_edge_msgs)}"
                     state.update_scratchpad_reason(tool_name, f"Graph generation failed: Invalid edges. {'; '.join(invalid_edge_msgs)}")
                     logger.error(f"LLM generated graph with invalid edges: {'; '.join(invalid_edge_msgs)}")
-                    state.execution_graph = None # Reject graph with invalid edges
+                    state.execution_graph = None
                 else:
                     state.execution_graph = graph_output
                     state.response = f"Successfully generated execution graph with {len(graph_output.nodes)} nodes and {len(graph_output.edges)} edges."
@@ -420,33 +487,15 @@ class OpenAPICoreLogic:
                 state.response = "Error: LLM did not return a valid JSON object matching the GraphOutput structure."
                 state.update_scratchpad_reason(tool_name, f"LLM graph generation failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to generate graph in valid GraphOutput format. Response: {llm_response[:500]}")
-                state.execution_graph = None # Clear on failure
+                state.execution_graph = None
 
         except Exception as e:
             state.response = f"Error during graph generation LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for graph generation: {e}", exc_info=True)
-            state.execution_graph = None # Clear on error
+            state.execution_graph = None
 
         return state # Return state instance
-
-    # Add add_graph_edge method if you want to support adding edges via user command
-    # def add_graph_edge(self, state: BotState) -> BotState:
-    #     """Adds an edge to the existing execution graph based on user parameters."""
-    #     tool_name = "add_graph_edge"
-    #     state.update_scratchpad_reason(tool_name, "Starting adding graph edge.")
-    #     logger.debug("Executing add_graph_edge node.")
-    #     # ... (rest of your add_graph_edge logic)
-    #     return state # Return state instance
-
-    # Add validate_graph method if you want to support validating the graph via user command
-    # def validate_graph(self, state: BotState) -> BotState:
-    #      """Validates the current execution graph, primarily checking for cycles."""
-    #      tool_name = "validate_graph"
-    #      state.update_scratchpad_reason(tool_name, "Starting graph validation.")
-    #      logger.debug("Executing validate_graph node.")
-    #      # ... (rest of your validate_graph logic)
-    #      return state # Return state instance
 
 
     def describe_graph(self, state: BotState) -> BotState: # Return BotState instance
@@ -461,14 +510,12 @@ class OpenAPICoreLogic:
             logger.error("describe_graph called without execution_graph.")
             return state # Return state instance
 
-        # Use the description already generated if available and seems good
         if state.execution_graph.description:
              state.response = state.execution_graph.description
              state.update_scratchpad_reason(tool_name, "Used existing graph description.")
              logger.info("Using existing graph description.")
              return state # Return state instance
 
-        # Otherwise, ask LLM to generate one
         graph_json = state.execution_graph.model_dump_json(indent=2)
         prompt = f"""
         Based on the following API execution graph (JSON format), provide a concise, natural language description of the workflow it represents.
@@ -485,10 +532,8 @@ class OpenAPICoreLogic:
         logger.info("Asking LLM to generate graph description.")
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Clean up response slightly
             description = llm_response.strip()
             state.response = description
-            # Optionally update the description in the graph object itself for future use
             state.execution_graph.description = description
             state.update_scratchpad_reason(tool_name, f"LLM generated graph description (length {len(description)}).")
             logger.info(f"Generated graph description: {description}")
@@ -497,7 +542,6 @@ class OpenAPICoreLogic:
             state.response = f"Error during graph description LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for graph description: {e}", exc_info=True)
-            # Fallback description
             state.response = f"The graph contains {len(state.execution_graph.nodes)} steps and {len(state.execution_graph.edges)} dependencies."
 
         return state # Return state instance
@@ -519,7 +563,6 @@ class OpenAPICoreLogic:
             state.response = graph_json
             state.update_scratchpad_reason(tool_name, "Outputted graph JSON.")
             logger.info("Outputted graph JSON.")
-            # No need to log the full JSON here, it's the response
         except Exception as e:
             state.response = f"Error serializing graph to JSON: {e}"
             state.update_scratchpad_reason(tool_name, f"JSON serialization error: {e}")
@@ -533,7 +576,6 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, f"Handling unknown intent for input: {state.user_input}")
         logger.debug("Executing handle_unknown node.")
 
-        # Ask LLM to formulate a polite refusal or clarification question
         prompt = f"""
         The user said: "{state.user_input}"
         My current state includes:
@@ -542,7 +584,7 @@ class OpenAPICoreLogic:
         - Execution graph summary: {state.execution_graph.description if state.execution_graph else 'None generated'}
 
         I couldn't determine a specific action (like 'parse spec', 'generate graph', 'execute workflow', etc.) from the user's input or the current state is not ready for the requested action.
-        Please formulate a polite response acknowledging the input and either:
+        Please formulate a polite response acknowledging the situation and either:
         a) Explain briefly what actions you *can* perform given the current state (e.g., if no spec, ask for one; if spec loaded, mention identifying APIs or building graph; if graph exists, mention execution or description).
         b) Ask for clarification on what the user wants to do.
 
@@ -553,9 +595,8 @@ class OpenAPICoreLogic:
             state.response = llm_response.strip()
             logger.info("LLM generated handle_unknown response.")
         except Exception as e:
-            logger.error(f"Error calling LLM for unknown intent handling: {e}", exc_info=True)
-            # Fallback response
-            state.response = "I'm sorry, I didn't understand that request or I'm not ready to perform it. Could you please rephrase? I can help with managing OpenAPI specs and execution graphs."
+             logger.error(f"Error calling LLM for unknown intent handling: {e}", exc_info=True)
+             state.response = "I'm sorry, I didn't understand that request or I'm not ready to perform it. Could you please rephrase? I can help with managing OpenAPI specs and execution graphs."
 
         state.update_scratchpad_reason(tool_name, "Provided clarification response.")
         return state # Return state instance
@@ -570,7 +611,6 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, f"Handling detected loop for previous intent: {state.previous_intent}")
         logger.debug("Executing handle_loop node.")
 
-        # Ask LLM to formulate a message about the loop and suggest next steps
         prompt = f"""
         It seems we are repeating the same step or getting stuck based on your last input: "{state.user_input}".
         My previous action was related to: {state.previous_intent}.
@@ -589,7 +629,6 @@ class OpenAPICoreLogic:
             logger.info("LLM generated handle_loop response.")
         except Exception as e:
              logger.error(f"Error calling LLM for handle_loop: {e}", exc_info=True)
-             # Fallback response
              state.response = "It looks like we're getting stuck. Could you please try rephrasing your request or tell me what you'd like to do next?"
 
         state.update_scratchpad_reason(tool_name, "Provided loop handling response.")

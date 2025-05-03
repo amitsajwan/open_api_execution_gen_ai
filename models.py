@@ -92,6 +92,7 @@ class BotState(BaseModel):
     plan: List[str] = []
     current_step: int = 0
     results: List[Any] = []
+    last_bot_message: str = ""
 
     class Config:
         # Allow extra fields in scratchpad without validation errors

@@ -1,44 +1,39 @@
 import logging
 from typing import Any, Dict
-from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver # Example checkpointer
+from langgraph.graph import StateGraph
+from langgraph.checkpoint.memory import MemorySaver
 
-# Assuming models, core_logic, router are defined in respective files
 from models import BotState
 from core_logic import OpenAPICoreLogic
 from router import OpenAPIRouter, AVAILABLE_INTENTS
 
-# Module-level logger
 logger = logging.getLogger(__name__)
 
-
-
 def build_graph(router_llm: Any, worker_llm: Any) -> Any:
-    """
-    Builds the LangGraph StateGraph for the OpenAPI assistant.
-
-    Args:
-        router_llm: The LLM instance for routing and parameter extraction.
-        worker_llm: The LLM instance for core OpenAPI tasks.
-
-    Returns:
-        A compiled LangGraph application ready for execution.
-    """
     logger.info("Building LangGraph...")
 
-    # Initialize components
     core_logic = OpenAPICoreLogic(worker_llm)
     router = OpenAPIRouter(router_llm)
 
-    # Define the graph structure using BotState
+    # Use StateGraph (Pydantic model BotState)  
     builder = StateGraph(BotState)
 
-    # --- Add Nodes ---
-    # Router Node: Determines the next step (returns str)
+    # 1) Router node (BotState → str)
     builder.add_node("router", router.route)
     logger.debug("Added node: router")
 
-    # Core Logic Nodes: One for each tool/action
+    # 2) Core‑logic adapter: BotState→BotState  →  dict→dict
+    def wrap_method(fn):
+        def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+            # Rehydrate Pydantic model
+            state = BotState.model_validate(state_dict)
+            # Execute your logic (returns BotState)
+            new_state = fn(state)
+            # Dump to plain dict for LangGraph
+            return new_state.model_dump()
+        return node
+
+    # 3) Register all tool methods through the wrapper
     tool_methods = {
         "parse_openapi_spec": core_logic.parse_openapi_spec,
         "identify_apis": core_logic.identify_apis,
@@ -51,18 +46,6 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         "handle_unknown": core_logic.handle_unknown,
     }
 
-    # Adapter: wrap BotState->BotState to dict->dict
-    def wrap_method(fn):
-        def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-            # Reconstruct Pydantic BotState
-            state = BotState.model_validate(state_dict)
-            # Execute logic (returns BotState)
-            new_state = fn(state)
-            # Return plain dict for LangGraph
-            return new_state.model_dump()
-        return node
-
-    # Add wrapped core logic nodes
     for intent_name, method in tool_methods.items():
         if intent_name in AVAILABLE_INTENTS:
             builder.add_node(intent_name, wrap_method(method))
@@ -70,24 +53,18 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         else:
             logger.warning(f"Skipping unknown intent: {intent_name}")
 
-    # --- Define Edges ---
-    # Entry Point
+    # 4) Entry point & edges
     builder.set_entry_point("router")
-
-    # Conditional edges from router
     builder.add_conditional_edges(
         "router",
         lambda state: state.intent,
         {intent: intent for intent in AVAILABLE_INTENTS}
     )
-
-    # Loop back edges from tools
     for intent_name in tool_methods:
         if intent_name in AVAILABLE_INTENTS:
             builder.add_edge(intent_name, "router")
 
-    # --- Compile with MemorySaver ---
-    memory = MemorySaver()
-    app = builder.compile(checkpointer=memory)
+    # 5) Compile with memory checkpointing
+    app = builder.compile(checkpointer=MemorySaver())
     logger.info("LangGraph compiled successfully.")
     return app

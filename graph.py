@@ -59,11 +59,11 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         {intent: intent for intent in AVAILABLE_INTENTS}
     )
 
-    # After each tool node, route again
+        # After each tool node, route again
     for intent in AVAILABLE_INTENTS:
-        if intent == "handle_unknown":
-            # End the graph on unknown intent
-            builder.add_edge("handle_unknown", END)
+        if intent in ("handle_unknown", "describe_graph", "get_graph_json"):
+            # End the graph on unknown, describe_graph, or get_graph_json intents
+            builder.add_edge(intent, END)
         else:
             # Route back to router for further processing
             builder.add_conditional_edges(

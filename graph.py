@@ -1,13 +1,17 @@
 import logging
+import json # Import json for potential JSON parsing of LLM output
 from typing import Any, Dict, List, Optional
-from langgraph.graph import StateGraph, START, END 
+from langgraph.graph import StateGraph, START, END, Node
 from langgraph.checkpoint.memory import MemorySaver
 
 # Import your existing components
 from models import BotState, GraphOutput # Assuming GraphOutput is in models.py
 from core_logic import OpenAPICoreLogic
 from router import OpenAPIRouter # Keep router for initial high-level routing
-import router
+
+# Assuming utils.py contains llm_call_helper and parse_llm_json_output
+from utils import llm_call_helper, parse_llm_json_output
+
 logger = logging.getLogger(__name__)
 
 # Define a broader set of graph nodes, including the new P/E/R components
@@ -72,7 +76,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     # It needs to interact with an LLM (router_llm or worker_llm) to make decisions.
     def planner_node(state: BotState) -> Dict[str, Any]:
         """
-        Analyzes user query and current state to decide the next action.
+        Analyzes user query and current state using an LLM to decide the next action.
         Possible outcomes:
         - Route to a core_logic graph building step (e.g., generate_execution_graph).
         - Set state.plan (list of operationIds) and route to the executor.
@@ -84,96 +88,175 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         execution_graph = state.execution_graph
         openapi_schema = state.openapi_schema
         logger.debug(f"User Query: {query}")
-        # logger.debug(f"Current State Intent (from router): {state.intent}") # Intent from initial router - might not be relevant here
         logger.debug(f"Execution Graph Exists: {execution_graph is not None}")
         logger.debug(f"OpenAPI Schema Exists: {openapi_schema is not None}")
+        logger.debug(f"Loop Counter: {state.loop_counter}") # Check loop counter from router
 
+        # --- LLM Planning Logic ---
+        # Build the prompt for the LLM
+        prompt_context = "Analyze the user's request and the current state of the system to determine the next best action."
 
-        # --- LLM Planning Logic Placeholder ---
-        # This is the crucial part to replace with an LLM call.
-        # The LLM should be prompted with:
-        # - user_input
-        # - A summary of the current state (e.g., "OpenAPI spec loaded", "Execution graph exists with N nodes").
-        # - Descriptions of possible actions (nodes in the graph it can route to):
-        #   - "generate_execution_graph": User wants to build/update the graph. Requires spec.
-        #   - "executor": User wants to run APIs from the existing graph. Requires graph.
-        #   - "describe_graph": User is asking about the current graph. Requires graph.
-        #   - "get_graph_json": User wants JSON of the graph. Requires graph.
-        #   - "parse_openapi_spec": User wants to parse a new spec. Requires spec text.
-        #   - "identify_apis": User wants to identify APIs from spec. Requires spec.
-        #   - "generate_payloads": User wants to generate payloads. Requires spec.
-        #   - "handle_unknown": If query is unclear or state is not ready for other actions.
-        #   - "handle_loop": If a loop is detected (though router handles primary loop detection).
-
-        # The LLM's response should indicate the chosen action (matching one of the node names)
-        # and potentially extract parameters for that action (e.g., operationIds for execution).
-
-        # Simulate LLM Decision based on query and state:
-        planner_decision = "handle_unknown" # Default decision
-
-        lower_query = query.lower()
-
-        # Simple loop detection check (can also rely on router's loop_counter)
-        if state.loop_counter >= 2: # Assuming loop_counter is incremented by the router before reaching planner
-             planner_decision = "handle_loop"
-             logger.info("Planner received state indicating a loop.")
-        # Check for explicit commands that bypass graph execution planning
-        elif "parse spec" in lower_query or "load spec" in lower_query:
-             planner_decision = "parse_openapi_spec"
-        elif "identify apis" in lower_query and openapi_schema: # Only identify if schema exists
-             planner_decision = "identify_apis"
-        elif "generate payloads" in lower_query and openapi_schema: # Only generate if schema exists
-             planner_decision = "generate_payloads"
-        elif "generate graph" in lower_query or "build workflow" in lower_query:
-             # Decide to build graph. Capture instructions.
-             planner_decision = "generate_execution_graph"
-             state.graph_generation_instructions = query # Capture instructions for graph building
-        elif "describe graph" in lower_query and execution_graph: # Only describe if graph exists
-             planner_decision = "describe_graph"
-        elif "get graph json" in lower_query and execution_graph: # Only get JSON if graph exists
-             planner_decision = "get_graph_json"
-        # Add validate_graph if you included it
-        # elif "validate graph" in lower_query and execution_graph:
-        #      planner_decision = "validate_graph"
-        # Check if the user wants to execute APIs AND a graph exists
-        elif execution_graph and ("execute" in lower_query or "run" in lower_query or "get" in lower_query or "find" in lower_query):
-             # --- LLM for API Selection and Parameter Extraction ---
-             # This is a key LLM call. It needs to select operationIds from the graph
-             # and extract parameters from the query.
-             # Prompt the LLM with: user_input, description of the execution_graph (nodes and edges).
-             # Instruct it to output a list of operationIds to execute and a dictionary
-             # of parameters mapped to operationIds.
-
-             # Simulate LLM selecting the first node's operationId for execution
+        # Describe the current state
+        state_description = f"""
+Current State:
+- User Input: "{query}"
+- OpenAPI Specification Loaded: {'Yes' if openapi_schema else 'No'}
+- Execution Graph Exists: {'Yes' if execution_graph else 'No'}
+"""
+        if execution_graph:
+             state_description += f"- Execution Graph Description: {execution_graph.description or 'No description available.'}\n"
              if execution_graph.nodes:
-                 # In a real LLM call, you'd select relevant nodes based on the query
-                 # For demo, let's assume LLM picks the first node for execution
-                 planned_operation_ids = [execution_graph.nodes[0].operationId]
-                 extracted_params = {} # Placeholder for params extracted by LLM
-                 # Example: extracted_params[planned_operation_ids[0]] = {'param_name': 'extracted_value'}
-                 state.plan = planned_operation_ids
-                 state.extracted_params = extracted_params
-                 state.current_step = 0 # Reset execution step counter
-                 state.results = [] # Clear previous results
-                 planner_decision = "executor" # Route to the executor node
-                 logger.debug(f"Planner decided to execute APIs: {state.plan}")
+                 # Provide a summary of available operations in the graph
+                 node_summaries = "\n".join([f"  - {node.operationId}: {node.summary or 'No summary'}" for node in execution_graph.nodes[:10]]) # Limit for brevity
+                 state_description += f"- Available API Operations in Graph ({len(execution_graph.nodes)} total, showing first 10):\n{node_summaries}\n"
              else:
-                 # Graph exists but is empty
-                 planner_decision = "handle_unknown" # Cannot execute if graph is empty
-                 state.final_response = "The execution graph is empty. Please regenerate it."
-        # If none of the above match, it's an unknown intent
+                 state_description += "- Execution Graph is empty.\n"
+        if openapi_schema and not execution_graph:
+             # If schema is loaded but no graph, list some potential actions from the schema
+             # This would require parsing schema paths/operations, which might be complex.
+             # For simplicity, we'll just note that the schema is available.
+             state_description += "- OpenAPI Schema is loaded and available for analysis/graph building.\n"
+
+
+        # Describe the possible actions (nodes the LLM can route to)
+        # Map node names to user-friendly descriptions of the action they perform.
+        available_actions = {
+            "parse_openapi_spec": "Parse a new OpenAPI specification provided by the user.",
+            "identify_apis": "Analyze the loaded OpenAPI specification to identify relevant API operations.",
+            "generate_payloads": "Generate example request payloads for identified API operations based on the schema.",
+            "generate_execution_graph": "Generate a sequence/workflow (execution graph) of API calls based on the loaded schema and user goal.",
+            "executor": "Execute the planned sequence of API calls from the existing execution graph.",
+            "describe_graph": "Provide a natural language description of the existing execution graph.",
+            "get_graph_json": "Output the JSON representation of the existing execution graph.",
+            "handle_unknown": "Respond to the user when the request is unclear or cannot be fulfilled in the current state.",
+            "handle_loop": "Respond to the user when the system appears to be stuck in a loop.",
+            # Add descriptions for validate_graph, add_graph_edge if used
+            # "validate_graph": "Validate the structure of the existing execution graph (e.g., check for cycles).",
+            # "add_graph_edge": "Add a new dependency edge between two nodes in the existing execution graph based on user instructions.",
+        }
+
+        actions_description = "Available Actions (choose one to route to):\n" + "\n".join([f"- `{name}`: {desc}" for name, desc in available_actions.items()])
+
+        # Instruct the LLM on the desired output format
+        output_instruction = """
+Based on the user input and the current state, determine the single best 'next_action' from the Available Actions.
+If the 'next_action' is `executor`, you MUST also provide a `plan` which is a JSON list of `operationId` strings from the execution graph nodes, representing the sequence of API calls to make. You should also extract any relevant `parameters` from the user query needed for these API calls and return them as a JSON object where keys are operationIds and values are parameter dictionaries.
+If the 'next_action' is `generate_execution_graph`, capture the user's goal/instructions for graph generation.
+For all other `next_action` values, the `plan` and `parameters` fields are optional but can be included if relevant.
+
+Output ONLY a JSON object in the following format:
+```json
+{{
+  "next_action": "chosen_action_name",
+  "plan": ["operationId1", "operationId2", ...], // Required only if next_action is "executor"
+  "parameters": {{ "operationId1": {{ "param1": "value1", ... }}, ... }}, // Optional, extracted from user query
+  "reasoning": "Brief explanation of why this action was chosen." // Optional
+}}
+```
+Ensure the `next_action` exactly matches one of the Available Actions names.
+"""
+
+        full_prompt = f"{prompt_context}\n\n{state_description}\n{actions_description}\n{output_instruction}\nUser Query: \"{query}\"\n\nOutput JSON:"
+
+        planner_decision = "handle_unknown" # Default fallback
+        planned_operation_ids = []
+        extracted_params = {}
+        reasoning = "Default fallback - LLM call failed or response unparseable."
+
+        # Simple loop detection check before calling LLM
+        if state.loop_counter >= 2:
+             planner_decision = "handle_loop"
+             reasoning = "Detected potential loop based on router's loop counter."
+             logger.info("Planner: Routing to handle_loop due to loop counter.")
         else:
-             planner_decision = "handle_unknown"
+            try:
+                # --- Call the LLM ---
+                # Use the worker_llm or a dedicated router_llm for this planning step
+                llm_response = llm_call_helper(self.worker_llm, full_prompt) # Using worker_llm as example
+
+                # --- Parse LLM Response ---
+                # Expecting a JSON object with 'next_action', 'plan', 'parameters', 'reasoning'
+                parsed_response = parse_llm_json_output(llm_response) # Use your JSON parsing helper
+
+                if isinstance(parsed_response, dict) and 'next_action' in parsed_response:
+                    determined_action = parsed_response['next_action']
+
+                    # Validate the determined action against available nodes
+                    if determined_action in available_actions: # Check against keys of available_actions
+                        planner_decision = determined_action
+                        planned_operation_ids = parsed_response.get('plan', [])
+                        extracted_params = parsed_response.get('parameters', {})
+                        reasoning = parsed_response.get('reasoning', 'LLM provided action.')
+
+                        # Additional validation for 'executor' action
+                        if planner_decision == "executor":
+                            if not isinstance(planned_operation_ids, list):
+                                logger.warning(f"LLM returned non-list plan for executor: {planned_operation_ids}. Defaulting to handle_unknown.")
+                                planner_decision = "handle_unknown"
+                                reasoning = "LLM returned invalid plan format for executor."
+                                planned_operation_ids = []
+                                extracted_params = {}
+                            elif not execution_graph:
+                                logger.warning("LLM decided 'executor' but no execution graph exists. Defaulting to handle_unknown.")
+                                planner_decision = "handle_unknown"
+                                reasoning = "LLM decided 'executor' but no graph exists."
+                                planned_operation_ids = []
+                                extracted_params = {}
+                            else:
+                                # Optional: Validate if planned_operation_ids actually exist in the execution_graph nodes
+                                graph_op_ids = {node.operationId for node in execution_graph.nodes}
+                                valid_plan = [op_id for op_id in planned_operation_ids if op_id in graph_op_ids]
+                                if len(valid_plan) != len(planned_operation_ids):
+                                     invalid_ids = set(planned_operation_ids) - graph_op_ids
+                                     logger.warning(f"LLM planned execution of non-existent operationIds: {invalid_ids}. Using valid subset.")
+                                     planned_operation_ids = valid_plan # Use only valid operationIds
+                                     if not planned_operation_ids:
+                                         # If all planned IDs were invalid, route to unknown
+                                         planner_decision = "handle_unknown"
+                                         reasoning = f"LLM planned execution of operationIds not found in graph: {invalid_ids}."
 
 
+                        # If the planner decided to build the graph, capture instructions
+                        if planner_decision == "generate_execution_graph":
+                             # The LLM might provide specific instructions in the reasoning or a dedicated field
+                             # For now, we'll rely on the router capturing the original query as instructions,
+                             # but a more advanced LLM could provide structured graph building instructions here.
+                             pass # Instructions are captured by the router or in state.graph_generation_instructions
+
+                    else:
+                        logger.warning(f"LLM returned invalid next_action: {determined_action}. Defaulting to handle_unknown.")
+                        planner_decision = "handle_unknown"
+                        reasoning = f"LLM returned invalid action name: {determined_action}."
+
+                else:
+                    logger.warning(f"LLM response not a valid JSON object with 'next_action': {llm_response[:500]}...")
+                    # Default to handle_unknown
+                    planner_decision = "handle_unknown"
+                    reasoning = "LLM response was not in the expected JSON format."
+
+
+            except Exception as e:
+                logger.error(f"Error during LLM planning call or parsing: {e}", exc_info=True)
+                # Default to handle_unknown on any error
+                planner_decision = "handle_unknown"
+                reasoning = f"Error during planning: {e}"
+
+
+        # Update state based on the planning outcome
         state.scratchpad['planner_decision'] = planner_decision
-        logger.debug(f"Planner Decision: {planner_decision}")
+        state.plan = planned_operation_ids
+        state.extracted_params = extracted_params
+        state.scratchpad['planner_reasoning'] = reasoning # Store reasoning for debugging/logging
 
-        # Note: The actual transition happens in the router function below,
+        logger.debug(f"Planner Final Decision: {planner_decision}")
+        logger.debug(f"Planner Final Plan: {state.plan}")
+        logger.debug(f"Planner Final Extracted Params: {state.extracted_params}")
+
+
+        # The actual transition happens in the router function below,
         # which reads state.scratchpad['planner_decision']
 
-        # Return the updated state. The router will use scratchpad['planner_decision']
-        # to determine the next node.
+        # Return the updated state.
         return state.model_dump()
 
     # 2. The Executor Node

@@ -1,55 +1,29 @@
-import json
+# router.py
+
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from models import BotState
+from typing import List, Any
+from persistence import save_state   # your save/load utilities
 
-# Assuming models.py defines BotState and intent parameter models
-from models import (
-    BotState, AddEdgeParams, GeneratePayloadsParams, GenerateGraphParams
-) 
-# Assuming utils.py defines helpers
-from utils import llm_call_helper, save_state, load_state, parse_llm_json_output
-
-# Module-level logger
 logger = logging.getLogger(__name__)
 
-# Define the available tools/intents the router can choose from
-# These should match the method names in OpenAPICoreLogic + 'router'
-AVAILABLE_INTENTS = [
+# Add the special loop‑break intent
+AVAILABLE_INTENTS: List[str] = [
     "parse_openapi_spec",
     "identify_apis",
     "generate_payloads",
     "generate_execution_graph",
-    "add_graph_edge",
-    "validate_graph",
     "describe_graph",
     "get_graph_json",
-    "handle_unknown", # Fallback
+    "handle_unknown",
+    "handle_loop"
 ]
 
-# Intents that might require parameter extraction
-INTENTS_REQUIRING_PARAMS = {
-    "add_graph_edge": AddEdgeParams,
-    "generate_payloads": GeneratePayloadsParams,
-    "generate_execution_graph": GenerateGraphParams,
-}
-
-
 class OpenAPIRouter:
-    """
-    Routes user input to the appropriate tool/action using a router LLM.
-    Handles state loading/saving and parameter extraction.
-    """
-    def __init__(self, router_llm: Any):
-        """
-        Initializes the router.
+    def __init__(self, llm: Any):
+        self.llm = llm
 
-        Args:
-            router_llm: The language model instance dedicated to routing and parameter extraction.
-        """
-        if not hasattr(router_llm, 'invoke'):
-             raise TypeError("router_llm must have an 'invoke' method.")
-        self.router_llm = router_llm
-        logger.info("OpenAPIRouter initialized.")
+    
 
     def _determine_intent(self, state: BotState) -> str:
         """Uses the router LLM to determine the next action/intent."""
@@ -186,42 +160,43 @@ class OpenAPIRouter:
 
     def route(self, state: BotState) -> str:
         """
-        The main routing logic called by LangGraph.
-        Loads state, determines intent, extracts parameters, saves state,
-        and returns the name of the next node (intent) to execute.
+        1) Guard: if no user_input → handle_unknown
+        2) Cycle‑detection: break if same intent repeats
+        3) Determine next intent and extract params
+        4) Persist state, then return intent
         """
         logger.debug(f"--- Router Start (Session: {state.session_id}) ---")
-        
-        # 1. Load potentially persisted state (optional, depending on graph setup)
-        # If using MemorySaver checkpointer, LangGraph handles state loading implicitly.
-        # If managing state manually per session:
-        # loaded = load_state(state.session_id)
-        # if loaded:
-        #     state = loaded # Overwrite incoming state with persisted one
-        #     logger.info(f"Router loaded persisted state for session {state.session_id}")
-        # else:
-        #     logger.info(f"Router starting with fresh state for session {state.session_id}")
-            
-        # Ensure user input is present
+    
+        # 1. Guard: require user_input
         if not state.user_input:
-             logger.warning("Router called with no user input in state.")
-             # Decide how to handle this - maybe default to a help/unknown intent?
-             state.intent = "handle_unknown" 
-             state.update_scratchpad_reason("Router", "No user input provided.")
-             save_state(state) # Save state even if input missing
-             logger.debug(f"--- Router End (Returning: {state.intent}) ---")
-             return state.intent
-
-        # 2. Determine Intent
-        next_intent = self._determine_intent(state) # Updates state.intent
-
-        # 3. Extract Parameters (if needed)
-        self._extract_parameters(state) # Updates state.extracted_params
-
-        # 4. Persist State
+            logger.warning("Router called with no user_input in state.")
+            state.intent = "handle_unknown"
+            # optional: record reason in scratchpad
+            state.update_scratchpad_reason("Router", "No user input provided.")
+            save_state(state)
+            logger.debug(f"--- Router End (Returning: {state.intent}) ---")
+            return state.intent
+    
+        # 2. Cycle detection
+        if state.intent == state.previous_intent:
+            state.loop_counter += 1
+        else:
+            state.loop_counter = 0
+        state.previous_intent = state.intent
+    
+        # break out if looping too much
+        if state.loop_counter >= 2:
+            logger.info("Loop detected; routing to handle_loop")
+            state.intent = "handle_loop"
+            save_state(state)
+            return state.intent
+    
+        # 3. Normal routing
+        next_intent = self._determine_intent(state)
+        self._extract_parameters(state)
+    
+        # 4. Persist and return
         save_state(state)
-
         logger.debug(f"--- Router End (Returning: {next_intent}) ---")
-        # 5. Return the determined intent string for LangGraph conditional routing
         return next_intent
-
+    

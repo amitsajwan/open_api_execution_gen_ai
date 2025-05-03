@@ -51,10 +51,21 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         "handle_unknown": core_logic.handle_unknown,
     }
 
+    def wrap_method(fn):
+        def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+            # Reconstruct Pydantic BotState from the raw dict
+            state = BotState.model_validate(state_dict)
+            # Call the original method, which returns a BotState
+            new_state = fn(state)
+            # Convert back into plain dict for LangGraph
+            return new_state.model_dump()
+        return node
+
     for intent_name, method in tool_methods.items():
-        if intent_name in AVAILABLE_INTENTS: # Ensure we only add defined intents
-            builder.add_node(intent_name, method)
-            logger.debug(f"Added node: {intent_name}")
+        if intent_name in AVAILABLE_INTENTS:
+            # Wrap each core‐logic method before adding
+            builder.add_node(intent_name, wrap_method(method))
+            logger.debug(f"Added wrapped node: {intent_name}")
         else:
              logger.warning(f"Method {intent_name} not in AVAILABLE_INTENTS, skipping node addition.")
 

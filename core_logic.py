@@ -118,6 +118,8 @@ class OpenAPICoreLogic:
     def parse_openapi_spec(self, state: BotState) -> BotState: # Return BotState instance
         """
         Parses the raw OpenAPI spec text provided in the state.
+        Handles spec text from either openapi_spec_text (for subsequent turns)
+        or user_input (for the first turn).
         Uses caching to avoid re-parsing identical specs.
         Relies on the LLM to perform the parsing/resolution.
         Updates state.openapi_schema and state.response.
@@ -126,14 +128,32 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting OpenAPI spec parsing.")
         logger.debug("Executing parse_openapi_spec node.")
 
-        if not state.openapi_spec_text:
-            state.response = "Error: No OpenAPI specification text found in the state to parse."
+        spec_text_to_parse = None
+
+        # Check if spec text is already in the dedicated field (subsequent turns)
+        if state.openapi_spec_text:
+            spec_text_to_parse = state.openapi_spec_text
+            logger.debug("Using spec text from state.openapi_spec_text.")
+        # If not, check if it's in the user input (first turn)
+        elif state.user_input:
+            # Heuristic: Assume if openapi_spec_text is empty, the user_input *is* the spec text
+            # for this node execution. A more robust approach might involve
+            # the router/planner explicitly moving the spec text from user_input.
+            spec_text_to_parse = state.user_input
+            # Optionally, move it to the dedicated field for future turns
+            state.openapi_spec_text = spec_text_to_parse
+            logger.debug("Using spec text from state.user_input and moving to state.openapi_spec_text.")
+
+        if not spec_text_to_parse:
+            state.response = "Error: No OpenAPI specification text found in the state or user input to parse."
             state.update_scratchpad_reason(tool_name, "Failed: No spec text provided.")
-            logger.error("parse_openapi_spec called without openapi_spec_text.")
+            logger.error("parse_openapi_spec called without spec text in state or user input.")
+            # Ensure state.openapi_spec_text is None if parsing failed due to no text
+            state.openapi_spec_text = None
             return state # Return state instance
 
         # Generate cache key based on the raw text
-        cache_key = get_cache_key(state.openapi_spec_text)
+        cache_key = get_cache_key(spec_text_to_parse)
         state.schema_cache_key = cache_key
 
         # Try loading from cache first
@@ -157,9 +177,9 @@ class OpenAPICoreLogic:
 
         OpenAPI Specification Text:
         ```
-        {state.openapi_spec_text[:15000]}
+        {spec_text_to_parse[:15000]}
         ```
-        { "... (Input specification truncated)" if len(state.openapi_spec_text) > 15000 else "" }
+        { "... (Input specification truncated)" if len(spec_text_to_parse) > 15000 else "" }
 
         Parsed and Resolved JSON Object:
         """
@@ -178,7 +198,7 @@ class OpenAPICoreLogic:
                 state.response = "Error: LLM did not return a valid JSON object for the OpenAPI schema."
                 state.update_scratchpad_reason(tool_name, f"LLM parsing failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to parse OpenAPI spec into valid JSON. Response: {llm_response[:500]}")
-                # Keep the raw text, but clear the schema field and cache key if parsing failed
+                # Keep the raw text in state.openapi_spec_text, but clear the schema field and cache key if parsing failed
                 state.openapi_schema = None
                 state.schema_cache_key = None # Clear cache key if parsing failed
 

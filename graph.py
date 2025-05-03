@@ -86,18 +86,23 @@ Current State:
         if openapi_schema and not execution_graph:
              state_description += "- OpenAPI Schema is loaded and available for analysis/graph building.\n"
 
+        # --- Explicit Task Completion Checks for the LLM ---
+        task_completion_status = "No specific task completion detected in the last step."
         if last_executed_node == "identify_apis" and state.identified_apis is not None:
-             state_description += f"- Outcome of identify_apis: Successfully identified {len(state.identified_apis)} APIs. This might fulfill a query asking 'what APIs are there'.\n"
+             task_completion_status = f"The 'identify_apis' node successfully ran. It identified {len(state.identified_apis)} APIs. This action likely fulfills user queries asking to list or see available APIs."
         elif last_executed_node == "describe_graph" and state.execution_graph and state.execution_graph.description:
-             state_description += f"- Outcome of describe_graph: Successfully generated graph description. This might fulfill a query asking to describe the graph.\n"
+             task_completion_status = f"The 'describe_graph' node successfully ran. It generated a description of the graph. This action likely fulfills user queries asking to describe the graph."
         elif last_executed_node == "get_graph_json" and state.execution_graph:
-             state_description += f"- Outcome of get_graph_json: Successfully generated graph JSON. This might fulfill a query asking for the graph JSON.\n"
+             task_completion_status = f"The 'get_graph_json' node successfully ran. It generated the JSON for the graph. This action likely fulfills user queries asking for the graph JSON."
         elif last_executed_node == "parse_openapi_spec" and state.openapi_schema:
-             state_description += f"- Outcome of parse_openapi_spec: Successfully parsed OpenAPI schema.\n"
+             task_completion_status = f"The 'parse_openapi_spec' node successfully ran. It parsed the OpenAPI schema. This is a prerequisite for many tasks."
         elif last_executed_node == "generate_execution_graph" and state.execution_graph:
-             state_description += f"- Outcome of generate_execution_graph: Successfully generated execution graph.\n"
+             task_completion_status = f"The 'generate_execution_graph' node successfully ran. It generated an execution graph. This is a prerequisite for execution or description."
         elif last_executed_node == "generate_payloads" and state.generated_payloads:
-             state_description += f"- Outcome of generate_payloads: Successfully generated example payloads.\n"
+             task_completion_status = f"The 'generate_payloads' node successfully ran. It generated example payloads. This might fulfill a query asking for example payloads."
+
+        state_description += f"\nTask Completion Status from Last Step:\n- {task_completion_status}\n"
+
 
         available_actions = {
             "parse_openapi_spec": "Parse a new OpenAPI specification provided by the user.",
@@ -117,10 +122,10 @@ Current State:
         # --- Refined Output Instruction for Planner ---
         output_instruction = """
 Based on the user input and the current state, determine the single best 'next_action' from the Available Actions.
-**CRITICAL LOGIC:**
-1. If the 'Last Executed Node' successfully completed an action that directly answers or fulfills the 'User Input', the `next_action` MUST be `responder`. For example, if the user asked "list APIs" and the 'Last Executed Node' was 'identify_apis' and it succeeded, route to `responder`. If the user asked "describe the graph" and the 'Last Executed Node' was 'describe_graph' and it succeeded, route to `responder`.
-2. If the 'Last Error Encountered' is not 'None', the `next_action` MUST be `responder` to report the error.
-3. Otherwise, determine the necessary next step to make progress towards fulfilling the 'User Input'.
+**CRITICAL DECISION MAKING PROCESS:**
+1.  **Check for Errors:** If the 'Last Error Encountered' is not 'None', the `next_action` MUST be `responder` to report the error to the user.
+2.  **Check for Task Completion:** Review the 'Task Completion Status from Last Step' and the original 'User Input'. If the action performed by the 'Last Executed Node' directly and successfully fulfills the user's request (e.g., user asked "list APIs" and 'identify_apis' completed; user asked "describe graph" and 'describe_graph' completed), the `next_action` MUST be `responder` to provide the final output.
+3.  **Plan Next Step:** If there was no error and the last step did NOT fully complete the user's request, determine the necessary next step to make progress towards fulfilling the 'User Input' using the 'Available Actions'.
 
 If the 'next_action' is `executor`, you MUST also provide a `plan` which is a JSON list of `operationId` strings from the execution graph nodes, representing the sequence of API calls to make. You should also extract any relevant `parameters` from the user query needed for these API calls and return them as a JSON object where keys are operationIds and values are parameter dictionaries.
 If the 'next_action' is `generate_execution_graph`, capture the user's goal/instructions for graph generation.
@@ -132,7 +137,7 @@ Output ONLY a JSON object in the following format:
   "next_action": "chosen_action_name",
   "plan": ["operationId1", "operationId2", ...], // Required only if next_action is "executor"
   "parameters": {{ "operationId1": {{ "param1": "value1", ... }}, ... }}, // Optional, extracted from user query
-  "reasoning": "Brief explanation of why this action was chosen." // Optional
+  "reasoning": "Brief explanation of why this action was chosen, referencing the Critical Decision Making Process steps." // Optional, but helpful for debugging
 }}
 ```
 Ensure the `next_action` exactly matches one of the Available Actions names.
@@ -334,8 +339,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              logger.info(f"Responder: Using LLM to format output from {planner_last_decision}.")
              prompt = f"""
              The user asked: "{query}"
-             The previous step ({planner_last_decision}) completed.
-             Based on the current state, please provide a user-friendly response.
+             The previous step ({planner_last_decision}) completed successfully.
+             Based on the current state, please provide a user-friendly response that directly addresses the user's request.
 
              Current State Information (Relevant to {planner_last_decision}):
              """
@@ -356,8 +361,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              else:
                  prompt += "\nNo specific data available from the previous step."
 
-             if state.response and "Error" in state.response:
-                  prompt += f"\nNote: The previous step also reported a potential issue: {state.response}"
+             # Removed the error check here, as the planner should route errors directly to responder
+             # without hitting this specific data formatting block.
 
              prompt += "\n\nUser-friendly response:"
 
@@ -366,6 +371,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
                   final_response_text = llm_response.strip()
              except Exception as e:
                   logger.error(f"Error calling LLM for {planner_last_decision} response synthesis: {e}", exc_info=True)
+                  # Fallback to basic formatting if LLM call fails
                   if state.response:
                       final_response_text = f"(From {planner_last_decision}): {state.response}"
                   else:
@@ -373,7 +379,15 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
 
         elif planner_last_decision in ["handle_unknown", "handle_loop"]:
              final_response_text = state.response or f"Operation {planner_last_decision} completed."
+        # Added explicit handling for the case where planner_last_decision is 'responder' itself
+        elif planner_last_decision == "responder":
+             # This shouldn't typically happen in a clean flow, but as a fallback,
+             # just use whatever might be in state.response or a generic message.
+             logger.warning("Responder node called when planner_last_decision was already 'responder'.")
+             final_response_text = state.response or "Processing complete."
 
+
+        # Fallback response if planner_last_decision was not set or not handled above.
         if not final_response_text and state.response:
              final_response_text = state.response
         elif not final_response_text:

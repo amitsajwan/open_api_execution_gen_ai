@@ -1,7 +1,7 @@
 import logging
 import json # Import json for potential JSON parsing of LLM output
 from typing import Any, Dict, List, Optional
-from langgraph.graph import StateGraph, START, END, Node
+from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 # Import your existing components
@@ -202,7 +202,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
             try:
                 # --- Call the LLM ---
                 # Use the worker_llm or a dedicated router_llm for this planning step
-                llm_response = llm_call_helper(self.worker_llm, full_prompt) # Using worker_llm as example
+                llm_response = llm_call_helper(worker_llm, full_prompt) # Using worker_llm as example
 
                 # --- Parse LLM Response ---
                 # Expecting a JSON object with 'next_action', 'plan', 'parameters', 'reasoning'

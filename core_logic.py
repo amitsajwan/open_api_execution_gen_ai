@@ -365,7 +365,7 @@ class OpenAPICoreLogic:
         5. Edges: Each edge should represent a dependency or sequential step. Define `from_node` and `to_node` using the operationIds. Add a brief `description` for the edge if the dependency reason is clear (e.g., "Uses ID from create response").
         6. Ensure the graph is a DAG (no circular dependencies). If a potential cycle exists (e.g., repeatedly checking status), represent it logically or note the pattern in the graph description.
         7. Provide a brief natural language `description` of the overall workflow represented by the graph.
-
+        8. when we need to call same operation multiple times, say we need to verify getById, after create , update delete , it will be a different node with distnict operationId
         Output Format:
         Output ONLY a single JSON object matching this structure:
         ```json

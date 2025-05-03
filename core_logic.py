@@ -3,10 +3,10 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-# Assuming models.py defines BotState, GraphOutput, Node, Edge, etc.
+# Assuming models.py defines BotState, GraphOutput, Node, Edge, InputMapping etc.
 from models import (
     BotState, GraphOutput, Node, Edge, AddEdgeParams,
-    GeneratePayloadsParams, GenerateGraphParams
+    GeneratePayloadsParams, GenerateGraphParams, InputMapping
 )
 # Assuming utils.py defines helpers
 from utils import (
@@ -35,82 +35,87 @@ class OpenAPICoreLogic:
         self.worker_llm = worker_llm
         logger.info("OpenAPICoreLogic initialized.")
 
-    def _get_relevant_schema_text(self, schema: Dict[str, Any], max_length: int = 8000) -> str:
+    def _generate_llm_schema_summary(self, schema: Dict[str, Any], max_length: int = 8000) -> str:
         """
-        Generates a structured, human-readable summary of the OpenAPI schema
-        for use in LLM prompts. Prioritizes key information like title, version,
-        paths, operations, summaries, and parameters.
+        Generates a comprehensive, LLM-friendly text summary of the OpenAPI schema
+        by using the worker LLM to process the full schema JSON.
+        Prioritizes key information like paths, operations, summaries, parameters,
+        request bodies, and responses.
         """
         if not schema:
             return "No OpenAPI schema available."
 
-        summary_parts = []
+        logger.debug("Generating LLM-based schema summary.")
 
-        # Add basic info
-        info = schema.get('info', {})
-        title = info.get('title', 'Untitled API')
-        version = info.get('version', 'N/A')
-        summary_parts.append(f"API Title: {title}")
-        summary_parts.append(f"Version: {version}\n")
-
-        # Summarize paths and operations
-        paths = schema.get('paths', {})
-        if not paths:
-            summary_parts.append("No paths defined in the schema.")
-        else:
-            summary_parts.append("Available Paths and Operations:")
-            for path, methods in paths.items():
-                summary_parts.append(f"- Path: {path}")
-                # Iterate through HTTP methods for this path
-                for method, operation in methods.items():
-                    if isinstance(operation, dict): # Ensure it's an operation object
-                        operation_id = operation.get('operationId', 'N/A')
-                        op_summary = operation.get('summary', 'No summary available.')
-                        description = operation.get('description', '')
-
-                        op_line = f"  - {method.upper()}: {operation_id} - {op_summary}"
-                        summary_parts.append(op_line)
-
-                        # Briefly mention parameters
-                        parameters = operation.get('parameters')
-                        if parameters:
-                             param_types = []
-                             for param in parameters:
-                                 if isinstance(param, dict) and 'in' in param:
-                                     param_types.append(param['in'])
-                             if param_types:
-                                 summary_parts.append(f"    Parameters: {', '.join(set(param_types))}") # Use set to get unique types
-
-                        # Briefly mention request body
-                        request_body = operation.get('requestBody')
-                        if request_body:
-                            summary_parts.append("    Request Body: Yes")
-
-                        # Briefly mention responses
-                        responses = operation.get('responses')
-                        if responses:
-                            response_codes = ", ".join(responses.keys())
-                            summary_parts.append(f"    Responses: {response_codes}")
-
-                        # Add description if concise
-                        if description and len(description) < 100: # Limit description length
-                             summary_parts.append(f"    Description: {description}")
+        # Convert the full schema dictionary to a JSON string for the LLM.
+        full_schema_json = json.dumps(schema, indent=2)
+        # Truncate the input JSON if it's excessively large.
+        truncated_input_json = full_schema_json[:15000] # Example limit
+        if len(full_schema_json) > 15000:
+             truncated_input_json += "\n... (OpenAPI schema JSON truncated for prompt)"
 
 
-        # Join parts and truncate if necessary
-        full_summary = "\n".join(summary_parts)
+        prompt = f"""
+        Analyze the following OpenAPI schema provided as a JSON object.
+        Generate a detailed, human-readable text summary that highlights the key aspects relevant for understanding and using the API.
+        Focus on:
+        - The API Title and Version.
+        - A list of all available Paths and the HTTP Methods for each path.
+        - For each operation (method on a path), include its `operationId`, `summary`, and a brief mention of its parameters (e.g., path, query, request body) and response codes.
+        - Briefly describe the structure of significant request bodies and responses if possible and concise, noting key field names.
+        - Do NOT include the full JSON schema in your output summary.
+        - Format the summary clearly with headings and bullet points.
 
-        if len(full_summary) > max_length:
-            logger.warning(f"Schema summary truncated to {max_length} characters.")
-            # Truncate gracefully, trying not to cut in the middle of a line
-            truncated_summary = full_summary[:max_length]
-            last_newline = truncated_summary.rfind('\n')
-            if last_newline != -1:
-                 truncated_summary = truncated_summary[:last_newline] + "\n... (truncated summary)"
+        OpenAPI Schema JSON:
+        ```json
+        {truncated_input_json}
+        ```
+
+        Detailed OpenAPI Schema Summary:
+        """
+
+        try:
+            # Use the worker_llm to generate the summary
+            llm_response = llm_call_helper(self.worker_llm, prompt)
+            llm_generated_summary = llm_response.strip()
+
+            logger.debug(f"LLM generated schema summary (length: {len(llm_generated_summary)}).")
+
+            # Apply truncation to the LLM's output as a safeguard
+            if len(llm_generated_summary) > max_length:
+                logger.warning(f"LLM-generated schema summary truncated to {max_length} characters.")
+                truncated_summary = llm_generated_summary[:max_length]
+                last_newline = truncated_summary.rfind('\n')
+                if last_newline != -1:
+                     truncated_summary = truncated_summary[:last_newline] + "\n... (summary truncated)"
+                else:
+                     truncated_summary = truncated_summary + "... (summary truncated)"
+                return truncated_summary
+            return llm_generated_summary
+
+        except Exception as e:
+            logger.error(f"Error calling LLM for schema summary: {e}", exc_info=True)
+            # Fallback to a basic programmatic summary if LLM call fails
+            logger.warning("Falling back to basic programmatic schema summary due to LLM error.")
+            fallback_summary = ["Error generating LLM summary. Basic schema info:"]
+            info = schema.get('info', {})
+            fallback_summary.append(f"API Title: {info.get('title', 'Untitled API')}")
+            fallback_summary.append(f"Version: {info.get('version', 'N/A')}")
+            paths = schema.get('paths', {})
+            if paths:
+                 fallback_summary.append(f"Paths defined: {len(paths)}")
+                 # Add first few paths as example
+                 for i, (path, methods) in enumerate(paths.items()):
+                     if i >= 5: break # Limit fallback detail
+                     fallback_summary.append(f"- {path}: {', '.join(methods.keys()).upper()}")
             else:
-                 truncated_summary = truncated_summary + "... (truncated summary)"
-            return truncated_summary
-        return full_summary
+                 fallback_summary.append("No paths defined.")
+
+            fallback_text = "\n".join(fallback_summary)
+            # Truncate fallback summary if needed
+            if len(fallback_text) > max_length:
+                 return fallback_text[:max_length] + "\n... (fallback summary truncated)"
+            return fallback_text
 
 
     # --- Tool Methods (Designed as Graph Nodes) ---
@@ -122,7 +127,7 @@ class OpenAPICoreLogic:
         or user_input (for the first turn).
         Uses caching to avoid re-parsing identical specs.
         Relies on the LLM to perform the parsing/resolution.
-        Updates state.openapi_schema and state.response.
+        Updates state.openapi_schema, state.schema_summary, and state.response.
         """
         tool_name = "parse_openapi_spec"
         state.update_scratchpad_reason(tool_name, "Starting OpenAPI spec parsing.")
@@ -148,8 +153,10 @@ class OpenAPICoreLogic:
             state.response = "Error: No OpenAPI specification text found in the state or user input to parse."
             state.update_scratchpad_reason(tool_name, "Failed: No spec text provided.")
             logger.error("parse_openapi_spec called without spec text in state or user input.")
-            # Ensure state.openapi_spec_text is None if parsing failed due to no text
             state.openapi_spec_text = None
+            state.openapi_schema = None
+            state.schema_summary = None # Ensure summary is also cleared
+            state.schema_cache_key = None
             return state # Return state instance
 
         # Generate cache key based on the raw text
@@ -160,15 +167,18 @@ class OpenAPICoreLogic:
         cached_schema = load_cached_schema(cache_key)
         if cached_schema:
             state.openapi_schema = cached_schema
+            # If schema is loaded from cache, generate or retrieve the summary as well
+            # For simplicity, we'll regenerate the summary from the cached schema.
+            # A more advanced cache could store the summary too.
+            state.schema_summary = self._generate_llm_schema_summary(state.openapi_schema)
             state.response = "Successfully loaded parsed OpenAPI schema from cache."
-            state.update_scratchpad_reason(tool_name, f"Loaded schema from cache (key: {cache_key}).")
-            logger.info("Loaded OpenAPI schema from cache.")
+            state.update_scratchpad_reason(tool_name, f"Loaded schema from cache (key: {cache_key}). Generated summary.")
+            logger.info("Loaded OpenAPI schema from cache and generated summary.")
             return state # Return state instance
 
         # If not cached, use LLM to parse
         state.update_scratchpad_reason(tool_name, "Schema not found in cache. Using LLM to parse.")
         logger.info("Parsing OpenAPI schema using LLM.")
-        # Instruct LLM to parse and resolve, outputting ONLY JSON
         prompt = f"""
         Parse the following OpenAPI specification text (which can be in YAML or JSON format) into a fully resolved JSON object.
         Ensure all internal `$ref` links are resolved if possible, embedding the referenced schema objects directly.
@@ -189,25 +199,28 @@ class OpenAPICoreLogic:
 
             if parsed_schema and isinstance(parsed_schema, dict):
                 state.openapi_schema = parsed_schema
-                state.response = "Successfully parsed OpenAPI specification using LLM."
-                state.update_scratchpad_reason(tool_name, f"LLM parsed schema. Keys: {list(parsed_schema.keys())}")
-                logger.info("LLM successfully parsed OpenAPI schema.")
+                # Successfully parsed, now generate the summary using the LLM
+                state.schema_summary = self._generate_llm_schema_summary(state.openapi_schema)
+                state.response = "Successfully parsed OpenAPI specification and generated summary."
+                state.update_scratchpad_reason(tool_name, f"LLM parsed schema and generated summary. Keys: {list(parsed_schema.keys())}")
+                logger.info("LLM successfully parsed OpenAPI schema and generated summary.")
                 # Save the newly parsed schema to cache
                 save_schema_to_cache(cache_key, parsed_schema)
             else:
                 state.response = "Error: LLM did not return a valid JSON object for the OpenAPI schema."
                 state.update_scratchpad_reason(tool_name, f"LLM parsing failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to parse OpenAPI spec into valid JSON. Response: {llm_response[:500]}")
-                # Keep the raw text in state.openapi_spec_text, but clear the schema field and cache key if parsing failed
                 state.openapi_schema = None
-                state.schema_cache_key = None # Clear cache key if parsing failed
+                state.schema_summary = None # Ensure summary is cleared on parsing failure
+                state.schema_cache_key = None
 
         except Exception as e:
             state.response = f"Error during OpenAPI parsing LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for OpenAPI parsing: {e}", exc_info=True)
             state.openapi_schema = None
-            state.schema_cache_key = None # Clear cache key if parsing failed
+            state.schema_summary = None # Ensure summary is cleared on error
+            state.schema_cache_key = None
 
         return state # Return state instance
 
@@ -225,20 +238,29 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("identify_apis called without openapi_schema.")
             return state # Return state instance
+        if not state.schema_summary:
+             # This should ideally not happen if parse_openapi_spec ran successfully
+             state.response = "Error: Cannot identify APIs without a schema summary. Please parse the spec again."
+             state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
+             logger.error("identify_apis called without schema_summary.")
+             return state # Return state instance
 
-        # Use the enhanced schema summary
-        schema_summary = self._get_relevant_schema_text(state.openapi_schema)
+
+        # Use the schema summary directly from the state
+        schema_summary = state.schema_summary
+
         # Use graph_generation_instructions or user_input as context for identification
         user_context = state.graph_generation_instructions or state.user_input or "general analysis"
 
+        # Prompt for identifying APIs based on the LLM-generated summary
         prompt = f"""
-        Analyze the following OpenAPI schema summary and identify the key API endpoints (operations) that are potentially relevant to the user's goal or for general understanding.
+        Analyze the following detailed OpenAPI schema summary and the user's goal to identify the key API endpoints (operations) that are most relevant.
         Consider the user's goal if provided: "{user_context}"
         For each identified API, extract its 'operationId', 'summary', HTTP 'method', and 'path'.
         Output ONLY a JSON list of objects, where each object represents an identified API endpoint.
         Example format: `[ {{"operationId": "getUser", "summary": "Get user details", "method": "get", "path": "/users/{{userId}}"}}, ... ]`
 
-        OpenAPI Schema Summary:
+        Detailed OpenAPI Schema Summary:
         ```
         {schema_summary}
         ```
@@ -292,6 +314,13 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("generate_payloads called without openapi_schema.")
             return state # Return state instance
+        if not state.schema_summary:
+             # This should ideally not happen if parse_openapi_spec ran successfully
+             state.response = "Error: Cannot generate payloads without a schema summary. Please parse the spec again."
+             state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
+             logger.error("generate_payloads called without schema_summary.")
+             return state # Return state instance
+
 
         apis_to_process = state.identified_apis
         # Check for specific instructions or target APIs from parameters (extracted by router or planner)
@@ -333,19 +362,20 @@ class OpenAPICoreLogic:
              logger.error("generate_payloads called with no APIs to process.")
              return state # Return state instance
 
-        # Use the enhanced schema summary
-        schema_summary = self._get_relevant_schema_text(state.openapi_schema)
+        # Use the schema summary directly from the state
+        schema_summary = state.schema_summary
+
         api_list_str = json.dumps(apis_to_process, indent=2)
         payloads_str = json.dumps(state.generated_payloads or "No payloads generated yet", indent=2)
 
         prompt = f"""
-        Based on the OpenAPI schema summary and the list of target API operations below, generate example request payloads.
+        Based on the detailed OpenAPI schema summary and the list of target API operations below, generate example request payloads.
         Follow these instructions: {instructions}
         For each API operation in the list, determine its required parameters (path, query, header, body) from the schema summary.
         Generate a plausible JSON payload for the request body if applicable (e.g., for POST, PUT, PATCH). Use realistic example values.
         Output ONLY a single JSON object where keys are the 'operationId' from the input list, and values are the generated example payloads (or null if no payload is applicable/needed, e.g., for simple GETs with no body).
 
-        OpenAPI Schema Summary:
+        Detailed OpenAPI Schema Summary:
         ```
         {schema_summary}
         ```
@@ -388,6 +418,7 @@ class OpenAPICoreLogic:
         of identified APIs, considering dependencies and user goals/instructions.
         This is a core "thought process" using the worker LLM.
         Updates state.execution_graph and state.response.
+        Includes explicit input mapping instructions in the graph nodes.
         """
         tool_name = "generate_execution_graph"
         state.update_scratchpad_reason(tool_name, "Starting execution graph generation.")
@@ -398,6 +429,13 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("generate_execution_graph called without openapi_schema.")
             return state # Return state instance
+        if not state.schema_summary:
+             # This should ideally not happen if parse_openapi_spec ran successfully
+             state.response = "Error: Cannot generate execution graph without a schema summary. Please parse the spec again."
+             state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
+             logger.error("generate_execution_graph called without schema_summary.")
+             return state # Return state instance
+
 
         # Check for specific instructions or goals from parameters (extracted by router or planner)
         params: Optional[GenerateGraphParams] = None
@@ -409,7 +447,10 @@ class OpenAPICoreLogic:
              logger.debug("Using graph generation instructions from state.")
              # For now, assume state.graph_generation_instructions is the primary instruction source
              # A more robust approach might parse it into goal/instructions fields
-             pass
+             # If graph_generation_instructions is a string, use it as combined goal/instructions
+             user_goal = state.graph_generation_instructions # Use the captured query as the goal
+             graph_instructions = "Based on the user's goal, determine the logical API call sequence and explicit data mappings."
+
         elif state.extracted_params:
             try:
                 params = GenerateGraphParams.model_validate(state.extracted_params)
@@ -424,18 +465,20 @@ class OpenAPICoreLogic:
                 state.graph_generation_instructions = f"Goal: {user_goal}\nInstructions: {graph_instructions}"
 
 
-        # Use the enhanced schema summary
-        schema_summary = self._get_relevant_schema_text(state.openapi_schema)
+        # Use the schema summary directly from the state
+        schema_summary = state.schema_summary
+
         api_list_str = json.dumps(state.identified_apis or "All APIs in schema", indent=2)
         payloads_str = json.dumps(state.generated_payloads or "No payloads generated yet", indent=2)
 
         prompt = f"""
         Task: Generate an API execution workflow graph as a Directed Acyclic Graph (DAG).
+        Crucially, for each node in the graph, identify how its input parameters are derived from the results of preceding nodes and specify this using explicit input mappings.
 
         Context:
         1. User Goal/Task: {user_goal}
         2. Specific Instructions: {graph_instructions}
-        3. OpenAPI Schema Summary:
+        3. Detailed OpenAPI Schema Summary:
             ```
             {schema_summary}
             ```
@@ -453,7 +496,14 @@ class OpenAPICoreLogic:
         2. Determine a logical sequence of API calls to achieve the goal. Think step-by-step about data flow (e.g., needing an ID from a 'create' response for a subsequent 'get' or 'update' call).
         3. Represent this workflow as a graph with nodes and edges.
         4. Nodes: Each node should correspond to an API operation. Include its 'operationId', 'summary', and optionally the generated 'example_payload' if available and relevant. Use operationIds found in the schema.
-        5. Edges: Each edge should represent a dependency or sequential step. Define `from_node` and `to_node` using the operationIds. Add a brief `description` for the edge if the dependency reason is clear (e.g., "Uses ID from create response").
+           **IMPORTANT:** For each node that requires input parameters derived from previous steps, include an `input_mappings` list. Each item in this list should be an object with:
+           - `source_operation_id`: The `operationId` of the node that produces the required data.
+           - `source_data_path`: A JSONPath expression (e.g., `$.id`, `$.items[0].name`, `$.data.token`) to extract the specific data field from the source node's *result*. Assume results are the parsed JSON response body.
+           - `target_parameter_name`: The name of the parameter in the current node's API call that this data maps to.
+           - `target_parameter_in`: The location of the target parameter (`path`, `query`, `header`, `cookie`).
+           - `transformation`: (Optional) A brief description if the data needs transformation (e.g., "convert to string", "format as date").
+
+        5. Edges: Each edge should represent a dependency or sequential step. Define `from_node` and `to_node` using the operationIds. Add a brief `description` for the edge if the dependency reason is clear (e.g., "Data dependency: uses ID from create response"). Ensure edges align with the `input_mappings`.
         6. Ensure the graph is a DAG (no circular dependencies). If a potential cycle exists (e.g., repeatedly checking status), represent it logically or note the pattern in the graph description.
         7. Provide a brief natural language `description` of the overall workflow represented by the graph.
 
@@ -461,27 +511,59 @@ class OpenAPICoreLogic:
         Output ONLY a single JSON object matching this structure:
         ```json
         {{
-          "nodes": [ {{ "operationId": "...", "summary": "...", "example_payload": {{...}} or null }}, ... ],
+          "nodes": [
+            {{
+              "operationId": "...",
+              "summary": "...",
+              "example_payload": {{...}} or null,
+              "input_mappings": [
+                {{
+                  "source_operation_id": "...",
+                  "source_data_path": "...",
+                  "target_parameter_name": "...",
+                  "target_parameter_in": "...",
+                  "transformation": "..." // Optional
+                }},
+                ...
+              ]
+            }},
+            ...
+          ],
           "edges": [ {{ "from_node": "opId1", "to_node": "opId2", "description": "..." }}, ... ],
           "description": "Overall workflow description..."
         }}
         ```
+        Ensure all `operationId`s used in nodes and edges exist in the schema summary.
+        Ensure `source_operation_id` in mappings refers to a preceding node in the planned sequence.
+        Ensure `target_parameter_name` and `target_parameter_in` match parameters expected by the target operation according to the schema summary.
 
         Generated Execution Graph (JSON Object):
         """
 
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
+            # Use parse_llm_json_output with the expected model for validation
             graph_output = parse_llm_json_output(llm_response, expected_model=GraphOutput)
 
             if graph_output and isinstance(graph_output, GraphOutput):
                 node_ids = {node.operationId for node in graph_output.nodes}
                 valid_graph_structure = True
                 invalid_edge_msgs = []
+                invalid_mapping_msgs = []
+
+                # Validate edges
                 for edge in graph_output.edges:
                      if edge.from_node not in node_ids or edge.to_node not in node_ids:
                           invalid_edge_msgs.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
                           valid_graph_structure = False
+
+                # Validate mappings (basic checks - more detailed validation might require schema analysis)
+                for node in graph_output.nodes:
+                    for mapping in node.input_mappings:
+                        if mapping.source_operation_id not in node_ids:
+                             invalid_mapping_msgs.append(f"Mapping in node '{node.operationId}' references non-existent source node: '{mapping.source_operation_id}'")
+                             valid_graph_structure = False
+                        # Could add checks here to see if target_parameter_name/in exist in the schema for this node's operationId
 
                 is_acyclic, cycle_msg = check_for_cycles(graph_output)
 
@@ -491,9 +573,10 @@ class OpenAPICoreLogic:
                     logger.error(f"LLM generated cyclic graph: {cycle_msg}")
                     state.execution_graph = None
                 elif not valid_graph_structure:
-                    state.response = f"Error: LLM generated a graph with invalid edge references. Details: {'; '.join(invalid_edge_msgs)}"
-                    state.update_scratchpad_reason(tool_name, f"Graph generation failed: Invalid edges. {'; '.join(invalid_edge_msgs)}")
-                    logger.error(f"LLM generated graph with invalid edges: {'; '.join(invalid_edge_msgs)}")
+                    error_details = "; ".join(invalid_edge_msgs + invalid_mapping_msgs)
+                    state.response = f"Error: LLM generated a graph with structural errors (invalid edges or mappings). Details: {error_details}"
+                    state.update_scratchpad_reason(tool_name, f"Graph generation failed: Structural errors. {error_details}")
+                    logger.error(f"LLM generated graph with structural errors: {error_details}")
                     state.execution_graph = None
                 else:
                     state.execution_graph = graph_output
@@ -539,7 +622,7 @@ class OpenAPICoreLogic:
         graph_json = state.execution_graph.model_dump_json(indent=2)
         prompt = f"""
         Based on the following API execution graph (JSON format), provide a concise, natural language description of the workflow it represents.
-        Focus on the sequence of actions and potential data flow.
+        Focus on the sequence of actions and potential data flow implied by the nodes, edges, and input mappings.
 
         Execution Graph JSON:
         ```json
@@ -653,4 +736,81 @@ class OpenAPICoreLogic:
 
         state.update_scratchpad_reason(tool_name, "Provided loop handling response.")
         return state # Return state instance
+
+    def answer_openapi_query(self, state: BotState) -> BotState: # Return BotState instance
+        """
+        Answers general informational queries about the loaded OpenAPI specification
+        or the generated graph/payloads using the worker LLM and available state data.
+        """
+        tool_name = "answer_openapi_query"
+        state.update_scratchpad_reason(tool_name, f"Starting to answer general query: {state.user_input}")
+        logger.debug("Executing answer_openapi_query node.")
+
+        query = state.user_input
+        schema_loaded = state.openapi_schema is not None
+        graph_exists = state.execution_graph is not None
+        apis_identified = state.identified_apis is not None
+        payloads_generated = state.generated_payloads is not None
+
+        if not schema_loaded and not graph_exists:
+             state.response = "I don't have an OpenAPI specification loaded or an execution graph generated yet. Please provide a spec first."
+             state.update_scratchpad_reason(tool_name, "Cannot answer query: No schema or graph.")
+             logger.info("Cannot answer OpenAPI query: No schema or graph.")
+             return state # Return state instance
+
+        # Construct a prompt for the LLM using available state information
+        prompt_parts = [f"The user is asking a question about the loaded OpenAPI specification or the generated workflow artifacts: \"{query}\""]
+
+        if schema_loaded and state.schema_summary:
+             prompt_parts.append("\nAvailable OpenAPI Schema Summary:")
+             prompt_parts.append("```")
+             prompt_parts.append(state.schema_summary)
+             prompt_parts.append("```")
+        elif schema_loaded:
+             prompt_parts.append("\nOpenAPI Schema is loaded, but summary is not available.")
+
+        if apis_identified:
+             prompt_parts.append(f"\nIdentified APIs ({len(state.identified_apis)} found):")
+             # Include a summary or list of identified APIs, but maybe not the full JSON if very long
+             api_summaries = [f"- {api.get('operationId', 'N/A')}: {api.get('summary', 'No summary')}" for api in state.identified_apis[:10]] # Limit list size
+             prompt_parts.append("\n".join(api_summaries))
+             if len(state.identified_apis) > 10:
+                 prompt_parts.append(f"... and {len(state.identified_apis) - 10} more.")
+
+        if graph_exists:
+             prompt_parts.append("\nExecution Graph Exists:")
+             prompt_parts.append(f"- Description: {state.execution_graph.description or 'No description available.'}")
+             prompt_parts.append(f"- Nodes: {len(state.execution_graph.nodes)}")
+             prompt_parts.append(f"- Edges: {len(state.execution_graph.edges)}")
+             # Optionally include a summary of graph nodes/edges if concise
+             if len(state.execution_graph.nodes) < 10: # Example limit
+                 node_list = ", ".join([node.operationId for node in state.execution_graph.nodes])
+                 prompt_parts.append(f"  Nodes: {node_list}")
+
+
+        if payloads_generated:
+             prompt_parts.append(f"\nExample Payloads Generated for {len(state.generated_payloads)} operations.")
+             # Optionally include keys of generated payloads
+             if len(state.generated_payloads) < 10: # Example limit
+                 payload_keys = ", ".join(state.generated_payloads.keys())
+                 prompt_parts.append(f"  Payloads for: {payload_keys}")
+
+
+        prompt_parts.append("\nBased on the information above, please answer the user's question clearly and concisely.")
+        prompt_parts.append("Answer to user:")
+
+        full_prompt = "\n".join(prompt_parts)
+
+        try:
+            llm_response = llm_call_helper(self.worker_llm, full_prompt)
+            state.response = llm_response.strip()
+            state.update_scratchpad_reason(tool_name, "LLM generated response to general query.")
+            logger.info("LLM generated response for general OpenAPI query.")
+        except Exception as e:
+            state.response = f"I encountered an error while trying to answer your question about the OpenAPI specification: {e}"
+            state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
+            logger.error(f"Error calling LLM for answer_openapi_query: {e}", exc_info=True)
+
+        return state # Return state instance
+
 

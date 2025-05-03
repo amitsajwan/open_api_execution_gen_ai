@@ -30,6 +30,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
             state = BotState.model_validate(state_dict)
             node_name = fn.__name__
             logger.debug(f"Executing core_logic node: {node_name}")
+            # Track the node that just finished executing
             state.scratchpad['last_executed_node'] = node_name
 
             try:
@@ -225,6 +226,14 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         if extracted_params:
              logger.info(f"Planner Extracted Params: {extracted_params}")
 
+        # Store the node that executed immediately before the planner,
+        # before clearing the general 'last_executed_node'.
+        # This is crucial for the responder when planner_last_decision is 'responder'.
+        if last_executed_node:
+             state.scratchpad['last_executed_node_before_planner'] = last_executed_node
+
+        # Clear last_executed_node after the planner has considered it.
+        # It will be set again by the next node that runs.
         if 'last_executed_node' in state.scratchpad:
              del state.scratchpad['last_executed_node']
 
@@ -305,10 +314,18 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         execution_error = state.scratchpad.get('execution_error')
         planner_last_decision = state.scratchpad.get('planner_decision')
         query = state.user_input
+        # Get the name of the node that ran immediately before the planner.
+        # This is the node whose output the responder might need to format if planner_last_decision is 'responder'.
+        last_executed_before_planner = state.scratchpad.get('last_executed_node_before_planner')
+
 
         final_response_text = ""
 
+        # Determine what kind of response is needed based on the planner's decision
+        # AND potentially the node that ran *before* the planner (if routed via planner).
+
         if planner_last_decision == "executor":
+            # Response based on API execution results.
             if execution_error:
                 final_response_text = f"An error occurred during API execution: {execution_error}\n"
                 if results:
@@ -335,69 +352,131 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
             else:
                  final_response_text = f"Execution completed, but no results were returned for query: '{query}'."
 
-        elif planner_last_decision in ["identify_apis", "describe_graph", "get_graph_json", "generate_payloads", "generate_execution_graph"]:
-             logger.info(f"Responder: Using LLM to format output from {planner_last_decision}.")
-             prompt = f"""
-             The user asked: "{query}"
-             The previous step ({planner_last_decision}) completed successfully.
-             Based on the current state, please provide a user-friendly response that directly addresses the user's request.
-
-             Current State Information (Relevant to {planner_last_decision}):
-             """
-             if planner_last_decision == "identify_apis" and state.identified_apis:
-                 prompt += f"\nIdentified APIs:\n```json\n{json.dumps(state.identified_apis, indent=2)}\n```"
-             elif planner_last_decision == "describe_graph" and state.execution_graph and state.execution_graph.description:
-                 prompt += f"\nExecution Graph Description:\n{state.execution_graph.description}"
-             elif planner_last_decision == "get_graph_json" and state.execution_graph:
-                 prompt += f"\nExecution Graph JSON:\n```json\n{state.execution_graph.model_dump_json(indent=2)}\n```"
-             elif planner_last_decision == "generate_payloads" and state.generated_payloads:
-                 prompt += f"\nGenerated Payloads:\n```json\n{json.dumps(state.generated_payloads, indent=2)}\n```"
-             elif planner_last_decision == "generate_execution_graph" and state.execution_graph:
-                  prompt += f"\nExecution Graph Description:\n{state.execution_graph.description or 'No description available.'}"
-                  if state.execution_graph.nodes:
-                       prompt += f"\nGraph contains {len(state.execution_graph.nodes)} nodes and {len(state.execution_graph.edges)} edges."
-             elif state.response:
-                 prompt += f"\nPrevious node message: {state.response}"
-             else:
-                 prompt += "\nNo specific data available from the previous step."
-
-             # Removed the error check here, as the planner should route errors directly to responder
-             # without hitting this specific data formatting block.
-
-             prompt += "\n\nUser-friendly response:"
-
-             try:
-                  llm_response = llm_call_helper(worker_llm, prompt)
-                  final_response_text = llm_response.strip()
-             except Exception as e:
-                  logger.error(f"Error calling LLM for {planner_last_decision} response synthesis: {e}", exc_info=True)
-                  # Fallback to basic formatting if LLM call fails
-                  if state.response:
-                      final_response_text = f"(From {planner_last_decision}): {state.response}"
-                  else:
-                       final_response_text = f"Operation {planner_last_decision} completed."
-
+        # Handle responses for specific core logic nodes that route directly to responder
+        # These nodes set state.response with a pre-formatted message (like handle_unknown/loop)
+        # In this case, planner_last_decision will be the name of the node (e.g., 'handle_unknown')
         elif planner_last_decision in ["handle_unknown", "handle_loop"]:
+             # These nodes are designed to set state.response with the final message
              final_response_text = state.response or f"Operation {planner_last_decision} completed."
-        # Added explicit handling for the case where planner_last_decision is 'responder' itself
+             logger.debug(f"Responder: Handling direct route from {planner_last_decision}. Using state.response.")
+
         elif planner_last_decision == "responder":
-             # This shouldn't typically happen in a clean flow, but as a fallback,
-             # just use whatever might be in state.response or a generic message.
-             logger.warning("Responder node called when planner_last_decision was already 'responder'.")
+             # The planner decided it's time to respond. Now, figure out *what* to respond about
+             # based on the node that ran *before* the planner (if any).
+             # We use last_executed_before_planner which was set by the planner node
+             # before clearing 'last_executed_node'.
+             logger.debug(f"Responder: Planner decided 'responder'. Checking last executed node before planner: {last_executed_before_planner}")
+
+             if last_executed_before_planner == "identify_apis" and state.identified_apis:
+                  logger.info("Responder: Formatting output from identify_apis.")
+                  prompt = f"""
+                  The user asked: "{query}"
+                  The identification of APIs completed successfully.
+                  Based on the identified APIs below, please provide a user-friendly response that directly addresses the user's request to list or see available APIs.
+
+                  Identified APIs:\n```json\n{json.dumps(state.identified_apis, indent=2)}\n```
+
+                  User-friendly response:
+                  """
+                  try:
+                       llm_response = llm_call_helper(worker_llm, prompt)
+                       final_response_text = llm_response.strip()
+                  except Exception as e:
+                       logger.error(f"Error calling LLM for identify_apis response synthesis: {e}", exc_info=True)
+                       final_response_text = "Identified APIs. Here is the raw data:\n" + json.dumps(state.identified_apis, indent=2)
+
+             elif last_executed_before_planner == "describe_graph" and state.execution_graph and state.execution_graph.description:
+                  logger.info("Responder: Formatting output from describe_graph.")
+                  prompt = f"""
+                  The user asked: "{query}"
+                  The graph description was generated.
+                  Here is the description:
+                  {state.execution_graph.description}
+
+                  Please provide a user-friendly response based on this description.
+                  """
+                  try:
+                       llm_response = llm_call_helper(worker_llm, prompt)
+                       final_response_text = llm_response.strip()
+                  except Exception as e:
+                       logger.error(f"Error calling LLM for describe_graph response synthesis: {e}", exc_info=True)
+                       final_response_text = f"Here is the graph description:\n{state.execution_graph.description}"
+
+             elif last_executed_before_planner == "get_graph_json" and state.execution_graph:
+                  # This is a case where raw output is expected
+                  logger.info("Responder: Outputting raw graph JSON.")
+                  final_response_text = f"### Execution Graph JSON:\n\n```json\n{state.execution_graph.model_dump_json(indent=2)}\n```"
+
+             elif last_executed_before_planner == "generate_payloads" and state.generated_payloads:
+                  logger.info("Responder: Formatting output from generate_payloads.")
+                  prompt = f"""
+                  The user asked: "{query}"
+                  Example payloads were generated.
+                  Here are the generated payloads:\n```json\n{json.dumps(state.generated_payloads, indent=2)}\n```
+
+                  Please provide a user-friendly response summarizing the generated payloads.
+                  """
+                  try:
+                       llm_response = llm_call_helper(worker_llm, prompt)
+                       final_response_text = llm_response.strip()
+                  except Exception as e:
+                       logger.error(f"Error calling LLM for generate_payloads response synthesis: {e}", exc_info=True)
+                       final_response_text = "Generated payloads. Here is the raw data:\n" + json.dumps(state.generated_payloads, indent=2)
+
+             elif last_executed_before_planner == "generate_execution_graph" and state.execution_graph:
+                   logger.info("Responder: Formatting output from generate_execution_graph.")
+                   # After generating the graph, we likely want to describe it.
+                   # Use the description already in the graph object itself if available, or ask LLM to summarize nodes/edges.
+                   if state.execution_graph and state.execution_graph.description:
+                       final_response_text = f"Successfully generated the execution graph. Here is a description:\n{state.execution_graph.description}"
+                   elif state.execution_graph:
+                       prompt = f"""
+                       The user asked: "{query}"
+                       An execution graph was successfully generated.
+                       The graph contains {len(state.execution_graph.nodes)} nodes and {len(state.execution_graph.edges)} edges.
+                       Please provide a user-friendly confirmation that the graph was generated and briefly mention its size.
+                       """
+                       try:
+                           llm_response = llm_call_helper(worker_llm, prompt)
+                           final_response_text = llm_response.strip()
+                       except Exception as e:
+                           logger.error(f"Error calling LLM for graph generation confirmation: {e}", exc_info=True)
+                           final_response_text = f"Successfully generated the execution graph with {len(state.execution_graph.nodes)} nodes and {len(state.execution_graph.edges)} edges."
+                   else:
+                       # Fallback if graph generation node ran but graph is not in state (indicates an issue)
+                       final_response_text = "Attempted to generate the execution graph, but the graph was not found in the state."
+                       logger.warning("Responder: generate_execution_graph ran, but state.execution_graph is None.")
+
+
+             elif state.response:
+                  # Fallback if the last executed node wasn't one of the specific data tools,
+                  # but there's a message in state.response (e.g., from parse_openapi_spec success).
+                  logger.info("Responder: Using state.response as final text.")
+                  final_response_text = state.response
+             else:
+                  # Generic fallback if no specific data or message is found.
+                  logger.warning("Responder: No specific data or message found for final response when planner decided 'responder'.")
+                  final_response_text = "Processing complete."
+
+        else:
+             # This case should ideally not be hit if the planner always routes to a defined node.
+             # As a fallback, use state.response if available.
+             logger.warning(f"Responder node called with unexpected planner_last_decision: {planner_last_decision}")
+             final_response_text = state.response or "An unexpected state occurred."
+
+
+        # Fallback if final_response_text is still empty (shouldn't happen with the above logic, but good practice)
+        if not final_response_text:
+             logger.warning("Responder: final_response_text is still empty after all logic.")
              final_response_text = state.response or "Processing complete."
 
-
-        # Fallback response if planner_last_decision was not set or not handled above.
-        if not final_response_text and state.response:
-             final_response_text = state.response
-        elif not final_response_text:
-             final_response_text = "Processing complete."
 
         logger.info(f"Setting final_response: {final_response_text[:200]}...")
         logger.info(f"Full final_response set: {final_response_text}")
 
         state.final_response = final_response_text
 
+        # Clear execution-related state fields after responding
         state.plan = []
         state.results = []
         state.current_step = 0
@@ -405,6 +484,14 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              del state.scratchpad['execution_error']
         if 'planner_decision' in state.scratchpad:
              del state.scratchpad['planner_decision']
+        # Clear the last executed node before planner after responding
+        if 'last_executed_node_before_planner' in state.scratchpad:
+             del state.scratchpad['last_executed_node_before_planner']
+
+        # Keep state.response if it contains a message from a core_logic node
+        # It might be useful for the next turn if the user asks a follow-up.
+        # Or clear it if you want a clean slate for the next turn.
+        # Decided to keep state.response for now.
 
         return state.model_dump()
 
@@ -489,6 +576,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
 
     for node_name in CORE_LOGIC_TO_PLANNER:
         if node_name in tool_methods:
+             # These nodes route to the planner. The planner will store 'node_name'
+             # in 'last_executed_node_before_planner' before clearing 'last_executed_node'.
              builder.add_edge(node_name, "planner")
              logger.debug(f"Added edge: {node_name} -> planner")
 
@@ -501,6 +590,9 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
 
     for node_name in CORE_LOGIC_TO_RESPONDER:
          if node_name in tool_methods:
+              # These nodes route directly to the responder.
+              # In the responder, planner_last_decision will be the node_name itself.
+              # The responder logic handles these cases explicitly *before* the planner_last_decision == 'responder' check.
               builder.add_edge(node_name, "responder")
               logger.debug(f"Added edge: {node_name} -> responder")
 

@@ -50,6 +50,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
 
     # Helper to wrap core_logic methods to fit the graph node signature
     # This wrapper ensures the state is validated and exceptions are caught.
+    # It also tracks the name of the last executed core_logic node.
     def wrap_core_logic_method(fn):
         def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             state = BotState.model_validate(state_dict)
@@ -80,12 +81,12 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     def planner_node(state: BotState) -> Dict[str, Any]:
         """
         Analyzes user query and current state using an LLM to decide the next action.
-        Considers the outcome of the previous step.
+        Considers the outcome of the previous step (last_executed_node, last_error).
         Possible outcomes:
         - Route to a core_logic graph building step (e.g., generate_execution_graph).
         - Set state.plan (list of operationIds) and route to the executor.
         - Route to handle_unknown or handle_loop.
-        - Route to responder if the query seems fulfilled.
+        - Route to responder if the query seems fulfilled by the previous step.
         Sets state.scratchpad['planner_decision'] to indicate the chosen path.
         """
         logger.debug("---PLANNER NODE---")
@@ -131,9 +132,18 @@ Current State:
              state_description += "- OpenAPI Schema is loaded and available for analysis/graph building.\n"
 
         # Add information about the outcome of the last step if relevant
+        # This is crucial for the LLM to know if a request was just fulfilled.
         if last_executed_node == "identify_apis" and state.identified_apis is not None:
-             state_description += f"- Outcome of identify_apis: Found {len(state.identified_apis)} APIs.\n"
-        # Add similar checks for other relevant nodes (e.g., parse_openapi_spec, generate_execution_graph)
+             state_description += f"- Outcome of identify_apis: Successfully identified {len(state.identified_apis)} APIs. This might fulfill a query asking 'what APIs are there'.\n"
+        elif last_executed_node == "describe_graph" and state.execution_graph and state.execution_graph.description:
+             state_description += f"- Outcome of describe_graph: Successfully generated graph description. This might fulfill a query asking to describe the graph.\n"
+        elif last_executed_node == "get_graph_json" and state.execution_graph:
+             state_description += f"- Outcome of get_graph_json: Successfully generated graph JSON. This might fulfill a query asking for the graph JSON.\n"
+        elif last_executed_node == "parse_openapi_spec" and state.openapi_schema:
+             state_description += f"- Outcome of parse_openapi_spec: Successfully parsed OpenAPI schema.\n"
+        elif last_executed_node == "generate_execution_graph" and state.execution_graph:
+             state_description += f"- Outcome of generate_execution_graph: Successfully generated execution graph.\n"
+        # Add similar checks for other relevant nodes
 
 
         # Describe the possible actions (nodes the LLM can route to)
@@ -159,7 +169,10 @@ Current State:
         # Instruct the LLM on the desired output format and decision logic
         output_instruction = """
 Based on the user input and the current state, determine the single best 'next_action' from the Available Actions.
-Crucially, consider the 'Last Executed Node' and 'Last Error Encountered'. If the previous action successfully addressed the user's input, the `next_action` should likely be `responder`.
+Crucially, consider the 'Last Executed Node' and 'Last Error Encountered'.
+- If the 'Last Executed Node' successfully performed an action that directly fulfills the 'User Input' (e.g., user asked "list APIs" and 'identify_apis' just ran successfully), the `next_action` should be `responder` to provide the output.
+- If the 'Last Error Encountered' is not 'None', the `next_action` should likely be `responder` to report the error.
+- Otherwise, determine the necessary next step to fulfill the 'User Input'.
 
 If the 'next_action' is `executor`, you MUST also provide a `plan` which is a JSON list of `operationId` strings from the execution graph nodes, representing the sequence of API calls to make. You should also extract any relevant `parameters` from the user query needed for these API calls and return them as a JSON object where keys are operationIds and values are parameter dictionaries.
 If the 'next_action' is `generate_execution_graph`, capture the user's goal/instructions for graph generation.
@@ -190,10 +203,9 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              reasoning = "Detected potential loop based on router's loop counter."
              logger.info("Planner: Routing to handle_loop due to loop counter.")
         elif last_error:
-             # If the previous step had an error, maybe route to handle_unknown or responder with error
-             # For now, let's route to responder, which can report the error from scratchpad
+             # If the previous step had an error, route to responder to report it
              planner_decision = "responder"
-             reasoning = f"Previous node ({last_executed_node}) reported an error."
+             reasoning = f"Previous node ({last_executed_node}) reported an error. Routing to responder."
              logger.warning(f"Planner: Routing to responder due to error in {last_executed_node}.")
              # Clear the last_error after handling it
              if 'last_error' in state.scratchpad:
@@ -202,7 +214,7 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
             try:
                 # --- Call the LLM ---
                 # Use the worker_llm or a dedicated router_llm for this planning step
-                llm_response = llm_call_helper(worker_llm, full_prompt) # Using worker_llm as example
+                llm_response = llm_call_helper(self.worker_llm, full_prompt) # Using worker_llm as example
 
                 # --- Parse LLM Response ---
                 # Expecting a JSON object with 'next_action', 'plan', 'parameters', 'reasoning'
@@ -282,6 +294,10 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         logger.debug(f"Planner Final Plan: {state.plan}")
         logger.debug(f"Planner Final Extracted Params: {state.extracted_params}")
 
+        # Clear last_executed_node and last_error from scratchpad after the planner has considered them
+        if 'last_executed_node' in state.scratchpad:
+             del state.scratchpad['last_executed_node']
+        # last_error is cleared when routing to responder due to error
 
         # The actual transition happens in the router function below,
         # which reads state.scratchpad['planner_decision']
@@ -442,21 +458,11 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
                  final_response_text = f"Execution completed, but no results were returned for query: '{query}'."
 
         # Handle responses for other planner decisions that lead directly to responder
-        elif planner_last_decision == "describe_graph":
-             # The describe_graph node should have set state.response. Use that.
-             final_response_text = state.response or "No execution graph description available."
-
-        elif planner_last_decision == "get_graph_json":
-             # The get_graph_json node should have set state.response. Use that.
-             final_response_text = state.response or "No execution graph available to output as JSON."
-
-        elif planner_last_decision in ["handle_unknown", "unsupported_by_planner"]:
-             # The handle_unknown node should have set state.response. Use that.
-             final_response_text = state.response or f"Sorry, I couldn't understand your request: '{query}'. Can you please rephrase? (Planner decision: {planner_last_decision})"
-
-        elif planner_last_decision == "handle_loop":
-             # The handle_loop node should have set state.response. Use that.
-             final_response_text = state.response or "It looks like we're in a loop. How would you like to proceed?"
+        # These nodes (like identify_apis, describe_graph) set state.response.
+        # The responder should use state.response in these cases.
+        elif planner_last_decision in ["describe_graph", "get_graph_json", "handle_unknown", "handle_loop", "identify_apis", "parse_openapi_spec", "generate_payloads", "generate_execution_graph"]:
+             # Use the response set by the core_logic node that just ran and led here
+             final_response_text = state.response or f"Operation {planner_last_decision} completed."
 
         # Fallback response if planner_last_decision was not set or not handled above
         # This might happen if a core_logic node routed directly to responder without planner

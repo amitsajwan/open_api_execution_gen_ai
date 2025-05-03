@@ -463,7 +463,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
                        final_response_text += f"\n{state.response}"
              elif state.response:
                   # For other nodes that set state.response, just use that message
-                  final_response_text = state.response
+                  # Add a small prefix to indicate which node produced this message for debugging
+                  final_response_text = f"(From {planner_last_decision}): {state.response}"
              else:
                   # Fallback if state.response is not set unexpectedly
                   final_response_text = f"Operation {planner_last_decision} completed."
@@ -479,6 +480,9 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
              final_response_text = "Processing complete." # Or a more informative default
 
         logger.info(f"Setting final_response: {final_response_text[:200]}...") # Log snippet
+        # Add a logger specifically for the full final response text being set
+        logger.info(f"Full final_response set: {final_response_text}")
+
         state.final_response = final_response_text # Set the final response field
 
         # Clear execution-related state fields after responding

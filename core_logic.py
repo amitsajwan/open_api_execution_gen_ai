@@ -52,7 +52,7 @@ class OpenAPICoreLogic:
 
     # --- Tool Methods ---
 
-    def parse_openapi_spec(self, state: BotState) -> BotState:
+    def parse_openapi_spec(self, state: BotState) -> Dict[str, Any]:
         """
         Parses the raw OpenAPI spec text provided in the state.
         Uses caching to avoid re-parsing identical specs.
@@ -65,7 +65,7 @@ class OpenAPICoreLogic:
             state.response = "Error: No OpenAPI specification text found in the state to parse."
             state.update_scratchpad_reason(tool_name, "Failed: No spec text provided.")
             logger.error("parse_openapi_spec called without openapi_spec_text.")
-            return state
+            return state.model_dump()
 
         # Generate cache key based on the raw text
         cache_key = get_cache_key(state.openapi_spec_text)
@@ -77,7 +77,7 @@ class OpenAPICoreLogic:
             state.openapi_schema = cached_schema
             state.response = "Successfully loaded parsed OpenAPI schema from cache."
             state.update_scratchpad_reason(tool_name, f"Loaded schema from cache (key: {cache_key}).")
-            return state
+            return state.model_dump()
 
         # If not cached, use LLM to parse
         state.update_scratchpad_reason(tool_name, "Schema not found in cache. Using LLM to parse.")
@@ -117,9 +117,9 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for OpenAPI parsing: {e}", exc_info=True)
             state.openapi_schema = None
 
-        return state
+        return state.model_dump()
 
-    def identify_apis(self, state: BotState) -> BotState:
+    def identify_apis(self, state: BotState)-> Dict[str, Any]:
         """
         Identifies relevant API endpoints from the parsed schema based on user goal or general analysis.
         (Placeholder - LLM task)
@@ -130,7 +130,7 @@ class OpenAPICoreLogic:
         if not state.openapi_schema:
             state.response = "Error: Cannot identify APIs without a parsed OpenAPI schema. Please provide/parse a spec first."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
-            return state
+            return state.model_dump()
 
         schema_summary = self._get_relevant_schema_text(state.openapi_schema)
         user_goal = state.graph_generation_instructions or state.user_input or "general analysis"
@@ -170,10 +170,10 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for API identification: {e}", exc_info=True)
             state.identified_apis = None
 
-        return state
+        return state.model_dump()
 
 
-    def generate_payloads(self, state: BotState) -> BotState:
+    def generate_payloads(self, state: BotState)-> Dict[str, Any]:
         """
         Generates example payloads for identified API operations using the LLM.
         Considers user instructions if provided via extracted_params.
@@ -184,7 +184,7 @@ class OpenAPICoreLogic:
         if not state.openapi_schema:
             state.response = "Error: Cannot generate payloads without a parsed OpenAPI schema."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
-            return state
+            return state.model_dump()
         
         apis_to_process = state.identified_apis
         if not apis_to_process:
@@ -214,7 +214,7 @@ class OpenAPICoreLogic:
         if not apis_to_process:
              state.response = "Error: No relevant API operations found or specified to generate payloads for. Try identifying APIs first."
              state.update_scratchpad_reason(tool_name, "Failed: No APIs to process.")
-             return state
+             return state.model_dump()
 
         schema_summary = self._get_relevant_schema_text(state.openapi_schema)
         api_list_str = json.dumps(apis_to_process, indent=2)
@@ -262,9 +262,9 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for payload generation: {e}", exc_info=True)
             state.generated_payloads = None
 
-        return state
+        return state.model_dump()
 
-    def generate_execution_graph(self, state: BotState) -> BotState:
+    def generate_execution_graph(self, state: BotState)-> Dict[str, Any]:
         """
         Generates a directed acyclic graph (DAG) representing the execution flow
         of identified APIs, considering dependencies and user goals.
@@ -276,7 +276,7 @@ class OpenAPICoreLogic:
         if not state.openapi_schema:
             state.response = "Error: Cannot generate execution graph without a parsed OpenAPI schema."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
-            return state
+            return state.model_dump()
 
         if not state.identified_apis:
             state.response = "Warning: No APIs explicitly identified. Graph generation might be less accurate. Consider running 'identify_apis' first."
@@ -391,9 +391,9 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for graph generation: {e}", exc_info=True)
             state.execution_graph = None
 
-        return state
+        return state.model_dump()
 
-    def add_graph_edge(self, state: BotState) -> BotState:
+    def add_graph_edge(self, state: BotState)-> Dict[str, Any]:
         """Adds an edge to the existing execution graph based on user parameters."""
         tool_name = "add_graph_edge"
         state.update_scratchpad_reason(tool_name, "Starting adding graph edge.")
@@ -401,7 +401,7 @@ class OpenAPICoreLogic:
         if not state.execution_graph:
             state.response = "Error: No execution graph exists to add an edge to. Please generate a graph first."
             state.update_scratchpad_reason(tool_name, "Failed: Graph missing.")
-            return state
+            return state.model_dump()
 
         if not state.extracted_params:
             state.response = "Error: Missing parameters (from_node, to_node) to add edge."
@@ -416,11 +416,11 @@ class OpenAPICoreLogic:
             if params.from_node not in node_ids:
                 state.response = f"Error: Source node '{params.from_node}' not found in the graph."
                 state.update_scratchpad_reason(tool_name, f"Failed: Source node {params.from_node} not found.")
-                return state
+                return state.model_dump()
             if params.to_node not in node_ids:
                 state.response = f"Error: Target node '{params.to_node}' not found in the graph."
                 state.update_scratchpad_reason(tool_name, f"Failed: Target node {params.to_node} not found.")
-                return state
+                return state.model_dump()
 
             new_edge = Edge(from_node=params.from_node, to_node=params.to_node, description=params.description)
 
@@ -428,8 +428,7 @@ class OpenAPICoreLogic:
             if new_edge in state.execution_graph.edges:
                 state.response = f"Edge from '{params.from_node}' to '{params.to_node}' already exists."
                 state.update_scratchpad_reason(tool_name, "No-op: Edge already exists.")
-                return state
-
+                return state.model_dump()
             # Create a potential new graph and check for cycles
             potential_graph = state.execution_graph.model_copy(deep=True)
             potential_graph.edges.append(new_edge)
@@ -438,7 +437,7 @@ class OpenAPICoreLogic:
             if not is_acyclic:
                 state.response = f"Error: Adding edge from '{params.from_node}' to '{params.to_node}' would create a cycle. {cycle_msg}"
                 state.update_scratchpad_reason(tool_name, f"Failed: Cycle detected - {cycle_msg}")
-                return state
+                return state.model_dump()
 
             # If acyclic, update the graph
             state.execution_graph = potential_graph
@@ -451,9 +450,9 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, f"Parameter processing error: {e}")
             logger.error(f"Error in add_graph_edge: {e}", exc_info=True)
 
-        return state
+        return state.model_dump()
 
-    def validate_graph(self, state: BotState) -> BotState:
+    def validate_graph(self, state: BotState)-> Dict[str, Any]:
         """Validates the current execution graph, primarily checking for cycles."""
         tool_name = "validate_graph"
         state.update_scratchpad_reason(tool_name, "Starting graph validation.")
@@ -461,7 +460,7 @@ class OpenAPICoreLogic:
         if not state.execution_graph:
             state.response = "No execution graph exists to validate."
             state.update_scratchpad_reason(tool_name, "Skipped: Graph missing.")
-            return state
+            return state.model_dump()
 
         is_acyclic, message = check_for_cycles(state.execution_graph)
 
@@ -473,9 +472,9 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, f"Validation failed: {message}")
         
         logger.info(f"Graph validation result: {state.response}")
-        return state
+        return state.model_dump()
 
-    def describe_graph(self, state: BotState) -> BotState:
+    def describe_graph(self, state: BotState)-> Dict[str, Any]:
         """Generates a natural language description of the current execution graph using the LLM."""
         tool_name = "describe_graph"
         state.update_scratchpad_reason(tool_name, "Starting graph description.")
@@ -483,13 +482,13 @@ class OpenAPICoreLogic:
         if not state.execution_graph:
             state.response = "Error: No execution graph exists to describe."
             state.update_scratchpad_reason(tool_name, "Failed: Graph missing.")
-            return state
+            return state.model_dump()
 
         # Use the description already generated if available and seems good
         if state.execution_graph.description:
              state.response = state.execution_graph.description
              state.update_scratchpad_reason(tool_name, "Used existing graph description.")
-             return state
+             return state.model_dump()
 
         # Otherwise, ask LLM to generate one
         graph_json = state.execution_graph.model_dump_json(indent=2)
@@ -522,9 +521,9 @@ class OpenAPICoreLogic:
             state.response = f"The graph contains {len(state.execution_graph.nodes)} steps and {len(state.execution_graph.edges)} dependencies."
 
 
-        return state
+        return state.model_dump()
 
-    def get_graph_json(self, state: BotState) -> BotState:
+    def get_graph_json(self, state: BotState)-> Dict[str, Any]:
         """Outputs the current execution graph as a JSON string."""
         tool_name = "get_graph_json"
         state.update_scratchpad_reason(tool_name, "Starting get graph JSON.")
@@ -532,7 +531,7 @@ class OpenAPICoreLogic:
         if not state.execution_graph:
             state.response = "Error: No execution graph exists to output."
             state.update_scratchpad_reason(tool_name, "Failed: Graph missing.")
-            return state
+            return state.model_dump()
 
         try:
             graph_json = state.execution_graph.model_dump_json(indent=2)
@@ -544,9 +543,9 @@ class OpenAPICoreLogic:
             state.update_scratchpad_reason(tool_name, f"JSON serialization error: {e}")
             logger.error(f"Error serializing graph: {e}", exc_info=True)
 
-        return state
+        return state.model_dump()
 
-    def handle_unknown(self, state: BotState) -> BotState:
+    def handle_unknown(self, state: BotState)-> Dict[str, Any]:
         """Handles cases where the user's intent is unclear or not supported."""
         tool_name = "handle_unknown"
         state.update_scratchpad_reason(tool_name, f"Handling unknown intent for input: {state.user_input}")
@@ -573,5 +572,5 @@ class OpenAPICoreLogic:
              state.response = "I'm sorry, I didn't understand that request. Could you please rephrase? I can help with parsing OpenAPI specs, generating execution graphs, adding edges, validating graphs, describing workflows, and generating payloads."
              
         state.update_scratchpad_reason(tool_name, "Provided clarification response.")
-        return state
+        return state.model_dump()
 

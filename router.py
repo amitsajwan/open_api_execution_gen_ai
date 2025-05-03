@@ -89,8 +89,9 @@ class OpenAPIRouter:
 
         try:
             llm_response = self.router_llm.invoke(prompt)
-            # Clean the response to get just the intent name
-            cleaned_response = llm_response.strip().lower().replace('.', '').replace('"', '').replace("'", "")
+            # Clean the response: strip whitespace and convert to lowercase.
+            # Then check for an exact match in AVAILABLE_INTENTS.
+            cleaned_response = llm_response.strip().lower()
 
             # Validate the determined intent against the available list
             if cleaned_response in self.AVAILABLE_INTENTS:

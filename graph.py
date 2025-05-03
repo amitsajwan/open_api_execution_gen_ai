@@ -1,8 +1,8 @@
 import logging
-import json # Import json for potential JSON parsing of LLM output
+import json
 from typing import Any, Dict, List, Optional
+# Removed Node from import as it's not used directly from langgraph.graph
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
 # Import your existing components
 from models import BotState, GraphOutput # Assuming GraphOutput is in models.py
@@ -14,34 +14,16 @@ from utils import llm_call_helper, parse_llm_json_output
 
 logger = logging.getLogger(__name__)
 
-# Define a broader set of graph nodes, including the new P/E/R components
-# and reusing your core_logic methods.
-# The initial router will direct traffic to these or to the new 'planner'.
-# Note: The actual nodes added to the graph builder will be from tool_methods
-# and the explicitly defined planner, executor, responder.
-# This list is more for conceptual clarity and ensuring all potential destinations are considered.
-ALL_POSSIBLE_NODE_NAMES = [
-    "planner",          # Decides which API calls (operationIds) to execute OR which core_logic step to take
-    "executor",         # Executes the planned API calls from execution_graph
-    "responder",        # Formats the final response
-    # Reuse relevant core_logic methods as nodes for graph building/preparation
-    "parse_openapi_spec",
-    "identify_apis",
-    "generate_payloads",
-    "generate_execution_graph",
-    "describe_graph",
-    "get_graph_json",
-    "handle_unknown",
-    "handle_loop",
-    # Add validate_graph if you want it as an explicit step
-    # "validate_graph", # Assuming validate_logic is in core_logic
-]
+# Removed the ALL_POSSIBLE_NODE_NAMES list as it was conceptual and not directly used in graph building.
 
 def build_graph(router_llm: Any, worker_llm: Any) -> Any:
+    """
+    Builds and compiles the LangGraph StateGraph for the OpenAPI execution agent.
+    """
     core_logic = OpenAPICoreLogic(worker_llm)
-    # The OpenAPIRouter will be used for initial high-level intent routing from START.
+    # The OpenAPIRouter is used for initial high-level intent routing from START.
     # It should ideally route to the 'planner' for most user inputs,
-    # unless the intent is a clear command like "load spec".
+    # unless it's a clear command like "load spec".
     router = OpenAPIRouter(router_llm)
 
     builder = StateGraph(BotState)
@@ -50,7 +32,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
 
     # Helper to wrap core_logic methods to fit the graph node signature
     # This wrapper ensures the state is validated and exceptions are caught.
-    # It also tracks the name of the last executed core_logic node.
+    # It also tracks the name of the last executed core_logic node in the scratchpad.
     def wrap_core_logic_method(fn):
         def node(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             state = BotState.model_validate(state_dict)
@@ -76,18 +58,13 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
 
     # 1. The Planner Node
     # This node takes the user query and the current state to decide the next action.
-    # It's the core of the dynamic behavior.
-    # It needs to interact with an LLM (router_llm or worker_llm) to make decisions.
+    # It's the core of the dynamic behavior, driven by an LLM.
     def planner_node(state: BotState) -> Dict[str, Any]:
         """
         Analyzes user query and current state using an LLM to decide the next action.
         Considers the outcome of the previous step (last_executed_node, last_error).
-        Possible outcomes:
-        - Route to a core_logic graph building step (e.g., generate_execution_graph).
-        - Set state.plan (list of operationIds) and route to the executor.
-        - Route to handle_unknown or handle_loop.
-        - Route to responder if the query seems fulfilled by the previous step.
-        Sets state.scratchpad['planner_decision'] to indicate the chosen path.
+        Sets state.scratchpad['planner_decision'] to indicate the chosen path,
+        and potentially state.plan and state.extracted_params.
         """
         logger.debug("---PLANNER NODE---")
         query = state.user_input
@@ -213,8 +190,8 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         else: # No loop detected and no previous error
             try:
                 # --- Call the LLM ---
-                # Use the worker_llm or a dedicated router_llm for this planning step
-                llm_response = llm_call_helper(self.worker_llm, full_prompt) # Using worker_llm as example
+                # self.worker_llm is an instance variable, so 'self' is required here.
+                llm_response = llm_call_helper(self.worker_llm, full_prompt)
 
                 # --- Parse LLM Response ---
                 # Expecting a JSON object with 'next_action', 'plan', 'parameters', 'reasoning'
@@ -290,9 +267,13 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         state.extracted_params = extracted_params
         state.scratchpad['planner_reasoning'] = reasoning # Store reasoning for debugging/logging
 
-        logger.debug(f"Planner Final Decision: {planner_decision}")
-        logger.debug(f"Planner Final Plan: {state.plan}")
-        logger.debug(f"Planner Final Extracted Params: {state.extracted_params}")
+        # Log the planner's decision and plan
+        logger.info(f"Planner Decision: {planner_decision}")
+        if planned_operation_ids:
+             logger.info(f"Planner Plan: {planned_operation_ids}")
+        if extracted_params:
+             logger.info(f"Planner Extracted Params: {extracted_params}")
+
 
         # Clear last_executed_node and last_error from scratchpad after the planner has considered them
         if 'last_executed_node' in state.scratchpad:
@@ -462,7 +443,29 @@ Ensure the `next_action` exactly matches one of the Available Actions names.
         # The responder should use state.response in these cases.
         elif planner_last_decision in ["describe_graph", "get_graph_json", "handle_unknown", "handle_loop", "identify_apis", "parse_openapi_spec", "generate_payloads", "generate_execution_graph"]:
              # Use the response set by the core_logic node that just ran and led here
-             final_response_text = state.response or f"Operation {planner_last_decision} completed."
+             # Add headings or structure based on the node that was executed
+             if planner_last_decision == "identify_apis" and state.identified_apis:
+                  final_response_text = "### Identified APIs:\n\n"
+                  for api in state.identified_apis:
+                       final_response_text += f"- **{api.get('operationId', 'N/A')}**: {api.get('summary', 'No summary')}\n"
+                       final_response_text += f"  `{api.get('method', 'N/A')} {api.get('path', 'N/A')}`\n"
+                  if state.response and "Error" in state.response: # Include error message if any
+                       final_response_text += f"\n{state.response}"
+             elif planner_last_decision == "describe_graph" and state.execution_graph and state.execution_graph.description:
+                  final_response_text = f"### Execution Graph Description:\n\n{state.execution_graph.description}"
+                  if state.response and "Error" in state.response: # Include error message if any
+                       final_response_text += f"\n{state.response}"
+             elif planner_last_decision == "get_graph_json" and state.execution_graph:
+                  final_response_text = f"### Execution Graph JSON:\n\n```json\n{state.execution_graph.model_dump_json(indent=2)}\n```"
+                  if state.response and "Error" in state.response: # Include error message if any
+                       final_response_text += f"\n{state.response}"
+             elif state.response:
+                  # For other nodes that set state.response, just use that message
+                  final_response_text = state.response
+             else:
+                  # Fallback if state.response is not set unexpectedly
+                  final_response_text = f"Operation {planner_last_decision} completed."
+
 
         # Fallback response if planner_last_decision was not set or not handled above
         # This might happen if a core_logic node routed directly to responder without planner

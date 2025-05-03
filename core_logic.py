@@ -574,3 +574,25 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Provided clarification response.")
         return state.model_dump()
 
+
+    
+    def handle_loop(self, state: BotState) -> Dict[str, Any]:
+        """
+        Called when the router detects the same intent repeating.
+        Place a message into state to ask the user how to proceed.
+        """
+        # You might accumulate these messages in a chat history field:
+        prompt = (
+            "It looks like we're going in circles. "
+            "Would you like to:\n"
+            "1) See the API list again\n"
+            "2) Modify the payloads\n"
+            "3) Exit or start over\n"
+            "Please reply with 1, 2, or 3."
+        )
+        # Assume you have a field state.last_bot_message or similar
+        state.last_bot_message = prompt  
+        # Reset loop counter so we don't immediately re‑enter handle_loop
+        state.loop_counter = 0  
+        return state.model_dump()
+    

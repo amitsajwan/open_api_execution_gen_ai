@@ -79,6 +79,9 @@ class BotState(BaseModel):
 
     # Routing and Control Flow
     intent: Optional[str] = Field(None, description="The user's intent as determined by the router LLM.")
+    previous_intent: Optional[str] = None       # last‐run intent
+    loop_counter: int = 0                       # repeat counter
+
     extracted_params: Optional[Dict[str, Any]] = Field(None, description="Parameters extracted by the router LLM for the current intent.")
     
     # Output and Communication

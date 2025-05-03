@@ -1,6 +1,6 @@
 import logging
 from typing import Any, Dict
-from langgraph.graph import StateGraph, START
+from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from models import BotState
@@ -61,11 +61,16 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
 
     # After each tool node, route again
     for intent in AVAILABLE_INTENTS:
-        builder.add_conditional_edges(
-            intent,
-            router.route,
-            {i: i for i in AVAILABLE_INTENTS}
-        )
+        if intent == "handle_unknown":
+            # End the graph on unknown intent
+            builder.add_edge("handle_unknown", END)
+        else:
+            # Route back to router for further processing
+            builder.add_conditional_edges(
+                intent,
+                router.route,
+                {i: i for i in AVAILABLE_INTENTS}
+            )
 
     # Compile graph with in-memory checkpointing
     app = builder.compile(checkpointer=MemorySaver())

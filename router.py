@@ -1,9 +1,13 @@
+# filename: router.py
 import logging
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field, ValidationError
 
 # Assuming models.py defines BotState
 from models import BotState
+
+# Assuming utils.py has llm_call_helper and parse_llm_json_output
+from utils import llm_call_helper, parse_llm_json_output
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -13,22 +17,22 @@ class OpenAPIRouter:
     Initial router for the LangGraph agent.
     Uses an LLM to determine the high-level intent of the user's query
     and route to the appropriate starting node in the graph.
-    Also handles basic loop detection.
+    Handles basic loop detection.
+    This router is for an agent that DOES NOT perform API execution.
     """
-    # Define the possible high-level intents/routes
+    # Define the possible high-level intents/routes for the graph
     AVAILABLE_INTENTS = [
-        "parse_openapi_spec",
-        "generate_execution_graph",
-        "executor",
-        "describe_graph",
-        "get_graph_json",
-        "answer_openapi_query", # Added the new query answering intent
-        "handle_unknown",
-        "handle_loop",
-        # Note: identify_apis and generate_payloads are now typically
-        # triggered proactively by the planner after parse_openapi_spec,
-        # but could potentially be direct intents if needed.
-        # For now, the planner handles routing to them.
+        "parse_openapi_spec", # User provides a spec
+        "plan_execution", # User asks to plan a workflow
+        "identify_apis", # User asks to identify relevant APIs
+        "generate_payloads", # User asks to generate payload descriptions
+        "generate_execution_graph", # User asks to generate the graph description
+        "describe_graph", # User asks to describe the graph description
+        "get_graph_json", # User asks for the graph description JSON
+        "answer_openapi_query", # User asks a general question about spec/plan
+        "handle_unknown", # Intent could not be determined
+        "handle_loop", # Detected potential loop in routing
+        # Removed "executor" as execution is not performed
     ]
 
     def __init__(self, router_llm: Any):
@@ -41,83 +45,81 @@ class OpenAPIRouter:
         if not hasattr(router_llm, 'invoke'):
              raise TypeError("router_llm must have an 'invoke' method.")
         self.router_llm = router_llm
-        logger.info("OpenAPIRouter initialized.")
+        logger.info("OpenAPIRouter initialized (without execution capabilities).")
+
 
     def route(self, state: BotState) -> str:
         """
-        Analyzes the user's input and determines the next node to route to.
-        Uses an LLM for intent classification.
-        Implements basic loop detection by checking recent intents.
-
-        Args:
-            state: The current BotState.
-
-        Returns:
-            The name of the next node to execute.
+        Determines the user's high-level intent and returns the name of the
+        next node in the graph to transition to.
+        Updates state.intent, state.previous_intent, and state.loop_counter.
         """
-        logger.debug("---ROUTER NODE---")
         user_input = state.user_input
         previous_intent = state.previous_intent
         loop_counter = state.loop_counter
 
-        logger.debug(f"User Input: {user_input}")
-        logger.debug(f"Previous Intent: {previous_intent}")
-        logger.debug(f"Loop Counter: {loop_counter}")
+        logger.debug(f"Routing user input: '{user_input}' (Previous intent: {previous_intent}, Loop counter: {loop_counter})")
+        state.update_scratchpad_reason("router", f"Routing user input: '{user_input}'")
 
-        # --- Loop Detection ---
-        # If the previous intent was the same as the current determined intent
-        # multiple times, route to a loop handling node.
-        # This check happens *after* determining the current intent below.
-
-        # --- Intent Classification using LLM ---
+        # --- LLM Call to Determine Intent ---
         prompt = f"""
-        Analyze the following user request and determine the primary high-level intent.
-        Choose ONE intent from the list below that best matches the user's goal.
+        The user's input is: "{user_input}"
 
-        Available Intents:
-        {', '.join(self.AVAILABLE_INTENTS)}
+        Determine the user's high-level intent based on their input and the current state.
+        Choose ONE intent from the following list: {self.AVAILABLE_INTENTS}.
+        If the user's input seems like an OpenAPI specification (starts with 'openapi:', 'swagger:', '{'{'}', '-', etc.), the intent is 'parse_openapi_spec'.
+        If the user is asking to create a workflow or plan, the intent is 'plan_execution'.
+        If the user is asking specifically about identifying APIs, use 'identify_apis'.
+        If the user is asking about generating example data for API calls, use 'generate_payloads'.
+        If the user is asking to generate the structure of an API workflow, use 'generate_execution_graph'.
+        If the user is asking to describe the generated workflow graph, use 'describe_graph'.
+        If the user is asking for the raw data of the generated graph, use 'get_graph_json'.
+        If the user is asking a general question about the OpenAPI spec, the identified APIs, the graph, or the plan, use 'answer_openapi_query'.
+        If the intent is unclear, use 'handle_unknown'.
+        If you detect a potential loop based on the history, the 'handle_loop' node will be triggered by the graph flow, but the router should still return the determined intent.
 
-        Consider the user's request carefully: "{user_input}"
+        Current State Summary:
+        - OpenAPI spec loaded: {'Yes' if state.openapi_schema else 'No'}
+        - Execution graph description exists: {'Yes' if state.execution_graph else 'No'}
+        - Execution plan description exists: {'Yes' if state.execution_plan else 'No'} ({len(state.execution_plan) if state.execution_plan else 0} steps)
+        - Previous Intent: {previous_intent or 'None'}
 
-        Output ONLY the name of the chosen intent, exactly as it appears in the list.
-        If the request does not clearly match any of the specific intents, choose 'handle_unknown'.
-        Do not include any other text or punctuation.
+        Output ONLY the chosen intent string.
 
         Chosen Intent:
         """
-        determined_intent = "handle_unknown" # Default fallback
-
         try:
-            llm_response = self.router_llm.invoke(prompt)
-            # Clean the response: strip whitespace and convert to lowercase.
-            # Then check for an exact match in AVAILABLE_INTENTS.
-            cleaned_response = llm_response.strip().lower()
+            llm_response = llm_call_helper(self.router_llm, prompt)
+            determined_intent = llm_response.strip().lower()
 
-            # Validate the determined intent against the available list
-            if cleaned_response in self.AVAILABLE_INTENTS:
-                determined_intent = cleaned_response
-                logger.info(f"Router LLM determined intent: {determined_intent}")
-            else:
-                logger.warning(f"Router LLM returned invalid intent '{cleaned_response}'. Defaulting to handle_unknown.")
+            # Basic validation: check if the determined intent is in the allowed list
+            if determined_intent not in self.AVAILABLE_INTENTS:
+                logger.warning(f"Router LLM returned invalid intent '{determined_intent}'. Defaulting to handle_unknown.")
                 determined_intent = "handle_unknown"
+                state.update_scratchpad_reason("router", f"LLM returned invalid intent '{llm_response.strip()}'. Defaulted to '{determined_intent}'.")
+            else:
+                logger.debug(f"Router LLM determined intent: {determined_intent}")
+                state.update_scratchpad_reason("router", f"LLM determined intent: '{determined_intent}'.")
 
         except Exception as e:
-            logger.error(f"Error during router LLM call: {e}", exc_info=True)
-            logger.warning("Router LLM call failed. Defaulting to handle_unknown.")
-            determined_intent = "handle_unknown" # Default on error
+            logger.error(f"Error calling Router LLM: {e}", exc_info=True)
+            determined_intent = "handle_unknown" # Fallback on error
+            state.update_scratchpad_reason("router", f"LLM call failed: {e}. Defaulted to '{determined_intent}'.")
+            state.response = "An internal error occurred while trying to understand your request. Please try again." # Set a user-facing error message
 
 
         # --- Apply Loop Detection based on determined_intent ---
+        # We will keep the loop detection logic here, but the 'handle_loop' node
+        # will now explain the situation without mentioning execution.
         if determined_intent == previous_intent and determined_intent not in ["handle_unknown", "handle_loop", "responder"]:
              # Increment loop counter if the same non-final intent repeats
              loop_counter += 1
              logger.warning(f"Router detected repeated intent: {determined_intent}. Loop counter: {loop_counter}")
-             if loop_counter >= 2: # Threshold for loop detection
+             if loop_counter >= 3: # Increased threshold slightly for less aggressive loop detection
                  logger.error(f"Router detected potential loop (intent '{determined_intent}' repeated {loop_counter} times). Routing to handle_loop.")
                  determined_intent = "handle_loop"
-                 # Reset counter after routing to handle_loop? Or let handle_loop manage it?
-                 # For now, let's reset it here to break the loop detection for the *next* turn.
-                 state.loop_counter = 0 # Resetting counter
+                 # Reset counter after routing to handle_loop
+                 state.loop_counter = 0
              else:
                  # Update counter but proceed with the determined intent for now
                  state.loop_counter = loop_counter
@@ -129,7 +131,14 @@ class OpenAPIRouter:
 
         # Update previous_intent in state for the next turn
         state.previous_intent = determined_intent
+        # Update current intent in state as well, for the graph conditional edge
+        state.intent = determined_intent
+
 
         logger.info(f"Router routing to: {determined_intent}")
-        return determined_intent
 
+        # The router node must return the state instance when used with StateGraph
+        # and the conditional edge checks state.intent.
+        # The previous diff correctly changed the return type to BotState.
+        # We just need to ensure state.intent is set before returning.
+        return state

@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 # --- Graph Representation Models ---
 
-# Define a model for input mapping instructions
+# Define a model for input mapping instructions (still useful for describing the plan)
 class InputMapping(BaseModel):
-    """Defines how to map data from previous results to a parameter of this node."""
-    source_operation_id: str = Field(..., description="The operationId of the previous node whose result contains the source data.")
-    source_data_path: str = Field(..., description="A path or expression (e.g., JSONPath) to extract the data from the source node's result.")
+    """Defines how to map data from previous results to a parameter of this node (as described in a plan)."""
+    source_operation_id: str = Field(..., description="The operationId of the previous node whose described result contains the source data.")
+    source_data_path: str = Field(..., description="A path or expression (e.g., JSONPath) to extract the data from the source node's described result.")
     target_parameter_name: str = Field(..., description="The name of the parameter in the current node's operation that this data maps to.")
     # Optional: Add parameter 'in' (path, query, header, cookie) for clarity/validation
     target_parameter_in: Optional[str] = Field(None, description="The location of the target parameter (path, query, header, cookie).")
@@ -23,17 +23,16 @@ class InputMapping(BaseModel):
 
 
 class Node(BaseModel):
-    """Represents a node in the execution graph (an API call)."""
+    """Represents a node (an API call description) in the execution graph."""
     operationId: str = Field(..., description="Unique identifier for the API operation (from OpenAPI spec).")
     summary: Optional[str] = Field(None, description="Short summary of the operation (from OpenAPI spec).")
     description: Optional[str] = Field(None, description="Detailed description of the operation.")
-    example_payload: Optional[Dict[str, Any]] = Field(None, description="Example payload for this API call.")
-    # Added field to store input mapping instructions
-    input_mappings: List[InputMapping] = Field(default_factory=list, description="Instructions on how to map data from previous node results to this node's parameters.")
+    example_payload: Optional[Dict[str, Any]] = Field(None, description="Example payload for this API call as described.")
+    input_mappings: List[InputMapping] = Field(default_factory=list, description="Instructions on how data would be mapped from previous described results.")
 
 
 class Edge(BaseModel):
-    """Represents a directed edge in the execution graph."""
+    """Represents a directed edge (dependency) in the execution graph description."""
     from_node: str = Field(..., description="The operationId of the source node.")
     to_node: str = Field(..., description="The operationId of the target node.")
     description: Optional[str] = Field(None, description="Optional description of why this dependency exists (e.g., data dependency).")
@@ -48,9 +47,9 @@ class Edge(BaseModel):
         return self.from_node == other.from_node and self.to_node == other.to_node
 
 class GraphOutput(BaseModel):
-    """Represents the generated API execution graph."""
-    nodes: List[Node] = Field(default_factory=list, description="List of API operations (nodes) in the graph.")
-    edges: List[Edge] = Field(default_factory=list, description="List of dependencies (edges) between nodes.")
+    """Represents the generated API execution graph description."""
+    nodes: List[Node] = Field(default_factory=list, description="List of API operations (nodes) in the graph description.")
+    edges: List[Edge] = Field(default_factory=list, description="List of dependencies (edges) between nodes in the graph description.")
     description: Optional[str] = Field(None, description="Natural language description of the overall workflow.")
 
 # --- Tool Parameter Models ---
@@ -64,13 +63,13 @@ class AddEdgeParams(BaseModel):
     description: Optional[str] = Field(None, description="Optional description for the new edge.")
 
 class GeneratePayloadsParams(BaseModel):
-    """Parameters/Instructions for generating payloads."""
-    instructions: Optional[str] = Field(None, description="Specific user instructions for how payloads should be generated.")
-    target_apis: Optional[List[str]] = Field(None, description="Optional list of specific operationIds to generate payloads for.")
+    """Parameters/Instructions for generating payloads (descriptions)."""
+    instructions: Optional[str] = Field(None, description="Specific user instructions for how payloads should be described.")
+    target_apis: Optional[List[str]] = Field(None, description="Optional list of specific operationIds to describe payloads for.")
 
 class GenerateGraphParams(BaseModel):
-    """Parameters/Instructions for generating the execution graph."""
-    goal: Optional[str] = Field(None, description="The overall user goal or task to accomplish with the API workflow.")
+    """Parameters/Instructions for generating the execution graph description."""
+    goal: Optional[str] = Field(None, description="The overall user goal or task to accomplish with the described API workflow.")
     instructions: Optional[str] = Field(None, description="Specific user instructions for how the graph should be structured.")
 
 # --- State Model ---
@@ -84,42 +83,36 @@ class BotState(BaseModel):
     openapi_spec_text: Optional[str] = Field(None, description="The raw OpenAPI specification text provided by the user.")
     openapi_schema: Optional[Dict[str, Any]] = Field(None, description="The parsed and resolved OpenAPI schema as a dictionary.")
     schema_cache_key: Optional[str] = Field(None, description="Cache key used for the current schema.")
-    schema_summary: Optional[str] = Field(None, description="LLM-generated text summary of the OpenAPI schema.") # Added new field
+    schema_summary: Optional[str] = Field(None, description="LLM-generated text summary of the OpenAPI schema.")
 
-    # API Identification and Payload Generation
+    # API Identification and Payload Generation (Descriptions)
     identified_apis: Optional[List[Dict[str, Any]]] = Field(None, description="List of APIs identified as potentially relevant by the LLM.")
-    generated_payloads: Optional[Dict[str, Any]] = Field(None, description="Dictionary mapping operationId to generated example payloads.")
-    payload_generation_instructions: Optional[str] = Field(None, description="User instructions captured for payload generation.")
+    generated_payloads: Optional[Dict[str, Any]] = Field(None, description="Dictionary mapping operationId to generated example payloads (descriptions).")
+    payload_generation_instructions: Optional[str] = Field(None, description="User instructions captured for payload description.")
 
-    # Execution Graph
-    execution_graph: Optional[GraphOutput] = Field(None, description="The generated API execution graph.")
-    graph_generation_instructions: Optional[str] = Field(None, description="User instructions captured for graph generation.")
+    # Execution Graph Description
+    execution_graph: Optional[GraphOutput] = Field(None, description="The generated API execution graph description.")
+    graph_generation_instructions: Optional[str] = Field(None, description="User instructions captured for graph description.")
 
-    # Plan-and-Execute Fields (New)
-    execution_plan: List[str] = Field(default_factory=list, description="Ordered list of operationIds or tool names to execute as a plan.")
-    current_plan_step: int = Field(0, description="Index of the current step being executed in the execution_plan.")
+    # Plan-only Fields
+    execution_plan: List[str] = Field(default_factory=list, description="Ordered list of operationIds or tool names describing steps of a plan.")
+    current_plan_step: int = Field(0, description="Index of the current step in the execution_plan description (useful for tracking).")
 
 
     # Routing and Control Flow
-    # The 'intent' field from the router can still be used for initial high-level routing
     intent: Optional[str] = Field(None, description="The user's high-level intent as determined by the initial router LLM.")
-    previous_intent: Optional[str] = None        # last-run intent (from router)
-    loop_counter: int = Field(0, description="Counter to detect potential loops in routing.") # repeat counter (from router)
+    previous_intent: Optional[str] = None
+    loop_counter: int = Field(0, description="Counter to detect potential loops in routing.")
 
     # Parameters extracted by the initial router or the planner
     extracted_params: Optional[Dict[str, Any]] = Field(None, description="Parameters extracted by the router or planner for the current action.")
 
-    # --- Executor/Responder Fields (Refined) ---
-    # The 'plan' field is now 'execution_plan' and 'current_step' is 'current_plan_step'
-    # plan: List[str] = Field(default_factory=list, description="List of operationIds to execute in sequence (generated by planner).")
-    # current_step: int = Field(0, description="Index of the current step being executed in the plan.")
-    # Store results indexed by operationId for easy lookup during execution
-    results: Dict[str, Any] = Field(default_factory=dict, description="Dictionary mapping executed operationId to its result.")
+    # --- Responder Fields ---
+    # The 'results' field is removed as actual execution does not occur.
+    # We might repurpose 'response' or rely solely on 'final_response'.
     final_response: str = Field("", description="The final, user-facing response generated by the responder.")
 
-    # Output and Communication (This field might become less central for final output,
-    # with final_response being the primary user-facing message, but can be used
-    # for intermediate messages from core_logic nodes)
+    # Output and Communication (Intermediate messages from core_logic nodes)
     response: Optional[str] = Field(None, description="Intermediate response message set by nodes (e.g., 'Schema parsed successfully').")
 
     # Internal working memory

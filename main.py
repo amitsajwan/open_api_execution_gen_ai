@@ -1,4 +1,4 @@
-# filename: api.py
+# filename: main.py
 
 import logging
 import uuid
@@ -67,61 +67,94 @@ def initialize_llms():
             def __init__(self, name="PlaceholderLLM"): self.name = name
             def invoke(self, prompt: Any, **kwargs) -> Any:
                 logger.warning(f"Using {self.name}. Needs replacement.")
-                # This placeholder needs to simulate the *result* of the LLM call
-                # as processed by the core_logic nodes, specifically setting 'response'
-                # and other state fields.
+                # This placeholder needs to simulate the *raw string output* of the LLM
+                # that the core_logic nodes then parse and use to update state.
+                # The simulation here is simplified; a real LLM would return a string.
                 prompt_str = str(prompt)
 
                 # Simulate router response (simple string intent)
                 if "Determine the most appropriate next action" in prompt_str:
                     # Simple check to simulate routing spec input vs question
                     if any(sig in prompt_str for sig in ['"openapi":', 'swagger:', '{', '-']): # Check for spec signatures in prompt
+                         # Simulate router returning the next node name
                          return "parse_openapi_spec"
                     elif "list apis" in prompt_str.lower() or "endpoints" in prompt_str.lower():
+                         # Simulate router returning the next node name
                          return "answer_openapi_query"
                     else:
+                         # Simulate router returning the next node name
                          return "handle_unknown"
 
-                # Simulate core_logic node responses (often setting 'response' and other state fields)
-                # The core_logic nodes parse the LLM's raw string output. This placeholder
-                # simulates the *effect* of that parsing on the state, simplified.
+                # Simulate core_logic node LLM responses
+                # These should simulate the *raw string output* the LLM would produce,
+                # which core_logic nodes are designed to parse.
+                # The core_logic nodes will *then* create the state update dictionary
+                # including 'response' and '__next__'.
                 if "Parse the following OpenAPI specification" in prompt_str:
-                    # Simulate the output *after* the core_logic node runs the LLM and updates state
-                    # In a real scenario, the LLM returns a string, core_logic parses it,
-                    # and sets state.openapi_schema, state.schema_summary, and state.response.
-                    # This placeholder directly returns a dict simulating the state update.
-                    return json.dumps({"response": "Simulating: Parsed OpenAPI spec and generated summary.",
-                                       "openapi_schema": {"openapi": "3.0.0", "info": {"title": "Simulated", "version": "1.0"}, "paths": {"/simulated": {"get": {"operationId": "getSimulated", "summary": "Get simulated data"}}}}})
+                    # Simulate LLM returning JSON for parsing
+                    simulated_schema_json = """
+                    {
+                      "openapi": "3.0.0",
+                      "info": {
+                        "title": "Simulated API",
+                        "version": "1.0"
+                      },
+                      "paths": {
+                        "/simulated": {
+                          "get": {
+                            "operationId": "getSimulated",
+                            "summary": "Get simulated data"
+                          }
+                        }
+                      }
+                    }
+                    """
+                    return simulated_schema_json # Core logic will parse this and set state['response']
+
                 if "identify the key API endpoints" in prompt_str:
-                     # Simulate state update after identify_apis runs
-                     return json.dumps({"response": "Simulating: Identified relevant APIs.",
-                                        "identified_apis": [{"operationId": "getSimulated", "summary": "Get simulated data", "method": "get", "path": "/simulated"}]})
+                     # Simulate LLM returning JSON list of APIs
+                     simulated_api_list_json = """
+                     [
+                       {"operationId": "getSimulated", "summary": "Get simulated data", "method": "get", "path": "/simulated"}
+                     ]
+                     """
+                     return simulated_api_list_json # Core logic will parse this and set state['response']
+
                 if "describe example request payloads" in prompt_str:
-                     # Simulate state update after generate_payloads runs
-                     return json.dumps({"response": "Simulating: Described example payloads.",
-                                        "payload_descriptions": {"getSimulated": {"description": "Example payload description for getSimulated"}}})
+                     # Simulate LLM returning JSON object of payload descriptions
+                     simulated_payloads_json = """
+                     {
+                       "getSimulated": "A description of the simulated payload."
+                     }
+                     """
+                     return simulated_payloads_json # Core logic will parse this and set state['response']
+
                 if "Generate a description of an API execution workflow graph" in prompt_str:
-                     # Simulate state update after generate_execution_graph runs
-                     return json.dumps({"response": "Simulating: Generated execution graph description.",
-                                        "execution_graph": {"nodes": [{"operationId": "getSimulated", "display_name": "getSimulated_instance", "payload_description": "...", "input_mappings": []}], "edges": [], "description": "Simulated graph description."}})
+                     # Simulate LLM returning JSON for the graph description
+                     simulated_graph_json = """
+                     {
+                       "nodes": [
+                         {"operationId": "getSimulated", "display_name": "getSimulated_instance", "payload_description": "Simulated payload.", "input_mappings": []}
+                       ],
+                       "edges": [],
+                       "description": "A simulated workflow description."
+                     }
+                     """
+                     return simulated_graph_json # Core logic will parse this and set state['response']
+
                 if "provide a concise, natural language description of the workflow" in prompt_str:
-                     # Simulate state update after describe_graph runs
-                     return json.dumps({"response": "Simulating: Described workflow.",
-                                        "execution_graph": {"nodes": [...], "edges": [...], "description": "Simulated graph description."}}) # Include graph structure if needed downstream
+                     # Simulate LLM returning a string description
+                     return "This is a simulated workflow description." # Core logic will set state['response']
+
                 if "Answer the user's question" in prompt_str and ("list apis" in prompt_str or "endpoints" in prompt_str):
-                    # Simulate state update after answer_openapi_query runs for "list apis"
-                    # This needs access to state.identified_apis in a real scenario
-                    # For this placeholder, let's just return a canned response simulating listing APIs
-                    simulated_apis = [{'operationId': 'getSimulated', 'summary': 'Get simulated data', 'method': 'get', 'path': '/simulated'}] # Example
-                    api_list_str = "\n".join([f"- {api['operationId']} ({api['method'].upper()} {api['path']}): {api['summary']}" for api in simulated_apis])
-                    return json.dumps({"response": f"Simulating: Found the following APIs:\n{api_list_str}"})
+                    # Simulate LLM returning a string answer
+                    return "Simulating: Based on the loaded spec, the following APIs are available: getSimulated." # Core logic will set state['response']
 
 
-                # Default fallback response for other prompts
+                # Default fallback raw string response
                 return "Simulating: Completed a step."
 
 
-            # For LangChain integration, ensure other required methods (_call, ainvoke, etc.) are present if needed
             # For async streaming, ainvoke is necessary.
             async def ainvoke(self, prompt: Any, **kwargs) -> Any:
                  # Simulate async behavior for astream
@@ -328,12 +361,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # --- How to Run ---
-# Save this code as api.py
+# Save this code as main.py (or api.py)
 # Make sure you have FastAPI, uvicorn, and your other dependencies installed:
 # pip install fastapi uvicorn websockets jinja2 # jinja2 only if you use the HTML template
 #
 # Run from your terminal:
-# uvicorn api:app --reload
+# uvicorn main:app --reload # Use main:app if filename is main.py
 #
 # Then connect to ws://localhost:8000/ws/submit_openapi from a WebSocket client
 # (like a simple HTML page or a WebSocket testing tool).

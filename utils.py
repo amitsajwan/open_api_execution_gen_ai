@@ -1,22 +1,25 @@
+# filename: utils.py
 import hashlib
 import json
 import logging
 import os # Added for cache directory path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Type # Import Type
 from pydantic import BaseModel, ValidationError
-import diskcache # Added for persistent caching
 
 # Assuming models.py defines GraphOutput, Node, Edge
 # Need to import BaseModel if expected_model type hint is used directly
 # from pydantic import BaseModel
 # Assuming models.py is available
 try:
-    from models import GraphOutput, Node, Edge
+    from models import GraphOutput, Node, Edge, BaseModel # Import BaseModel here
 except ImportError:
     # Define dummy classes if models.py is not found, to allow utils.py to load
     logger.warning("Could not import models from models.py. Using dummy classes.")
     class GraphOutput: pass
-    class Node: pass
+    class Node:
+        @property
+        def effective_id(self):
+            return getattr(self, 'operationId', 'dummy_node')
     class Edge: pass
     class BaseModel: pass # Dummy for type hint if needed
 
@@ -71,6 +74,7 @@ def save_schema_to_cache(cache_key: str, schema: Dict[str, Any]):
 def check_for_cycles(graph: GraphOutput) -> Tuple[bool, str]:
     """
     Checks if the given execution graph is a Directed Acyclic Graph (DAG).
+    Uses the effective_id of nodes for checks.
     Returns a tuple: (is_dag, cycle_message).
     """
     # Ensure graph and graph.nodes are valid before proceeding
@@ -78,25 +82,24 @@ def check_for_cycles(graph: GraphOutput) -> Tuple[bool, str]:
          logger.warning("Invalid graph object passed to check_for_cycles.")
          return False, "Invalid graph structure provided." # Treat invalid graph as potentially cyclic
 
-    if not graph.nodes:
-        return True, "Graph is empty or has no nodes."
-
-    node_ids = {node.operationId for node in graph.nodes if isinstance(node, Node) and hasattr(node, 'operationId')}
+    # Use effective_id for unique identification in graph checks
+    node_ids = {node.effective_id for node in graph.nodes if isinstance(node, Node)} # Use effective_id
     if not node_ids:
-        return True, "Graph has nodes but no valid operationIds found."
+        return True, "Graph is empty or has no valid node identifiers."
 
-    # Build adjacency list
-    adj: Dict[str, List[str]] = {op_id: [] for op_id in node_ids}
+    # Build adjacency list using effective_id
+    adj: Dict[str, List[str]] = {node_id: [] for node_id in node_ids}
     if not isinstance(graph.edges, list):
          logger.warning("Graph edges attribute is not a list in check_for_cycles.")
          return False, "Invalid graph edges structure." # Treat invalid graph as potentially cyclic
 
     for edge in graph.edges:
         if isinstance(edge, Edge) and hasattr(edge, 'from_node') and hasattr(edge, 'to_node'):
-            if edge.from_node in adj and edge.to_node in node_ids: # Check target exists in nodes
+            # Edge nodes must exist as effective_ids
+            if edge.from_node in adj and edge.to_node in node_ids:
                  adj[edge.from_node].append(edge.to_node)
             else:
-                 logger.warning(f"Skipping invalid edge in cycle check: {edge.from_node} -> {edge.to_node} (One or both nodes may not exist)")
+                 logger.warning(f"Skipping invalid edge in cycle check: {edge.from_node} -> {edge.to_node} (One or both nodes may not exist as effective_id)")
         else:
              logger.warning(f"Skipping invalid edge object in cycle check: {edge}")
 
@@ -104,14 +107,14 @@ def check_for_cycles(graph: GraphOutput) -> Tuple[bool, str]:
     visited: Dict[str, bool] = {node_id: False for node_id in node_ids}
     recursion_stack: Dict[str, bool] = {node_id: False for node_id in node_ids}
 
-    for node_id in node_ids: # Iterate through all valid node IDs
+    for node_id in node_ids: # Iterate through all valid node effective IDs
         if not visited[node_id]:
             # Use a helper function for the recursive DFS part
             if _dfs_cycle_check(node_id, visited, recursion_stack, adj):
                 # Cycle detected by helper
                 # Note: Reconstructing the exact cycle path here is complex,
                 # the helper function just returns True if a cycle is found.
-                return False, f"Cycle detected involving node {node_id} or its descendants."
+                return False, f"Cycle detected involving node '{node_id}' or its descendants."
 
     return True, "No cycles detected."
 
@@ -127,7 +130,7 @@ def _dfs_cycle_check(node_id: str, visited: Dict[str, bool], recursion_stack: Di
                 return True # Cycle found in deeper recursion
         elif recursion_stack[neighbor_id]:
             # Cycle detected: neighbor is already in the current recursion stack
-            logger.error(f"Cycle detected: Edge from {node_id} to {neighbor_id} completes a cycle.")
+            logger.error(f"Cycle detected: Edge from '{node_id}' to '{neighbor_id}' completes a cycle.")
             return True
 
     # Remove node from recursion stack as we backtrack
@@ -181,7 +184,8 @@ def llm_call_helper(llm: Any, prompt: Any) -> str:
 
 # --- JSON Parsing Helper ---
 
-def parse_llm_json_output(llm_output: str, expected_model: Optional[type[BaseModel]] = None) -> Any:
+# Renamed function for clarity when using optional model validation
+def parse_llm_json_output_with_model(llm_output: str, expected_model: Optional[Type[BaseModel]] = None) -> Any:
     """
     Parses JSON output from an LLM string, handling potential markdown formatting
     and optional Pydantic model validation.
@@ -223,6 +227,7 @@ def parse_llm_json_output(llm_output: str, expected_model: Optional[type[BaseMod
         logger.debug("Successfully parsed JSON.")
 
         # If an expected Pydantic model class is provided, validate the data
+        # Check if expected_model is actually a subclass of BaseModel
         if expected_model and issubclass(expected_model, BaseModel):
             logger.debug(f"Validating parsed JSON against model: {expected_model.__name__}")
             try:
@@ -237,7 +242,7 @@ def parse_llm_json_output(llm_output: str, expected_model: Optional[type[BaseMod
         else:
             # No validation requested or invalid model provided, return raw parsed data
             if expected_model:
-                 logger.warning(f"expected_model ({expected_model}) is not a valid Pydantic model. Skipping validation.")
+                 logger.warning(f"expected_model ({expected_model}) is not a valid Pydantic model type. Skipping validation.")
             return parsed_data
 
     except json.JSONDecodeError as e:

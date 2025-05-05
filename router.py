@@ -64,19 +64,18 @@ class OpenAPIRouter:
         previous_intent = state.previous_intent
         loop_counter = state.loop_counter
 
+        # Initialize determined_intent to None at the start
+        determined_intent: Optional[str] = None # <-- INITIALIZED HERE
+
         # Reset the input_is_spec flag at the start of routing
         state.input_is_spec = False
-        # Clear previous intent and extracted params to ensure fresh routing unless loop detected
-        # state.previous_intent = None # Don't clear previous_intent yet, needed for loop detection
-        state.extracted_params = None # Clear extracted params from previous turn
+        # Clear extracted params from previous turn
+        state.extracted_params = None
 
 
         if not user_input:
             logger.warning("Router received empty user input. Routing to handle_unknown.")
             determined_intent = "handle_unknown"
-            # Don't update previous_intent here to potentially detect loop of empty inputs
-            # state.previous_intent = "handle_unknown" # Avoid loop detection on empty input
-            # state.loop_counter = 0 # Don't reset loop counter yet
             state.update_scratchpad_reason("router", "Empty input, routing to handle_unknown.")
             # Loop detection will be applied below
 
@@ -114,20 +113,20 @@ class OpenAPIRouter:
                 else:
                     logger.debug("Router LLM classified input NOT as a query about the loaded state. Proceeding to general intent determination.")
                     # If not a query about the state, proceed to the general intent determination below
-                    determined_intent = None # Indicate that general intent needs to be determined
+                    # determined_intent remains None, which triggers the next block
 
             except Exception as e:
                 logger.error(f"Error calling Router LLM for query classification: {e}", exc_info=True)
                 # If classification fails, fall back to general intent determination
                 logger.warning("Router LLM query classification failed. Proceeding to general intent determination.")
-                determined_intent = None # Indicate that general intent needs to be determined
+                # determined_intent remains None
                 state.update_scratchpad_reason("router", f"LLM query classification failed: {e}. Proceeding to general intent determination.")
 
 
         # --- General Intent Determination (if not already routed by state or is a new spec) ---
         # This block runs if determined_intent is still None (meaning it wasn't a query about loaded state)
         # or if there was no schema loaded initially.
-        if determined_intent is None:
+        if determined_intent is None: # <-- Check if intent is still None
             # --- Heuristic Check for NEW OpenAPI Spec ---
             # Only check for spec heuristic if no schema is loaded OR if the input is very long
             # (indicating it might be a new spec even if one is loaded)
@@ -141,16 +140,16 @@ class OpenAPIRouter:
                  else:
                       logger.debug("Input not detected as spec by heuristic or schema exists and input is short. Using LLM for general intent.")
                       # Fall through to LLM intent determination if not a spec by heuristic or short input with existing schema
-                      determined_intent = "use_llm_for_general_intent" # Placeholder to indicate LLM call needed
+                      # determined_intent remains None, which triggers the LLM call below
             else:
                  # Schema exists and input is short and not classified as a query about state.
                  # This is likely a command or a different type of request. Use LLM for general intent.
                  logger.debug("Schema exists, input is short, and not classified as query. Using LLM for general intent.")
-                 determined_intent = "use_llm_for_general_intent" # Placeholder to indicate LLM call needed
+                 # determined_intent remains None
 
 
-            # --- Call LLM for General Intent (if placeholder set) ---
-            if determined_intent == "use_llm_for_general_intent":
+            # --- Call LLM for General Intent (if determined_intent is still None) ---
+            if determined_intent is None: # <-- Check if intent is still None before calling LLM
                 prompt = f"""
                 The user's input is: "{user_input}"
 
@@ -191,13 +190,14 @@ class OpenAPIRouter:
 
                 except Exception as e:
                     logger.error(f"Error calling Router LLM for general intent: {e}", exc_info=True)
-                    determined_intent = "handle_unknown" # Fallback on error
+                    # If LLM call fails, default to handle_unknown
+                    determined_intent = "handle_unknown"
                     state.update_scratchpad_reason("router", f"LLM call failed: {e}. Defaulted to '{determined_intent}'.")
                     # Set an intermediate response here if desired, although handle_unknown node will generate one
                     # state.response = "An internal error occurred while trying to understand your request. Please try again."
 
-            # If determined_intent is still 'use_llm_for_general_intent', it means the LLM call failed or wasn't attempted.
-            if determined_intent == "use_llm_for_general_intent":
+            # If determined_intent is still None after all checks, it means something went wrong.
+            if determined_intent is None: # <-- Final fallback check
                  logger.error("Router failed to determine intent after all checks. Defaulting to handle_unknown.")
                  determined_intent = "handle_unknown"
                  state.update_scratchpad_reason("router", "Failed to determine intent after all checks. Defaulted to handle_unknown.")

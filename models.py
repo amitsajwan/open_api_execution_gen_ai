@@ -25,11 +25,11 @@ class InputMapping(BaseModel):
 class Node(BaseModel):
     """Represents a node (an API call description) in the execution graph."""
     operationId: str = Field(..., description="Unique identifier for the API operation (from OpenAPI spec).")
-    display_name: Optional[str] = Field(None, description="A unique display name for this node instance, useful for differentiating multiple calls to the same operation.") # Added display_name
+    display_name: Optional[str] = Field(None, description="A unique display name for this node instance, useful for differentiating multiple calls to the same operation.")
     summary: Optional[str] = Field(None, description="Short summary of the operation (from OpenAPI spec).")
     description: Optional[str] = Field(None, description="Detailed description of the operation.")
-    # Renamed from example_payload to payload_description for clarity
-    payload_description: Optional[Dict[str, Any]] = Field(None, description="Description of an example payload for this API call.")
+    # Changed type from Dict[str, Any] to str for payload description
+    payload_description: Optional[str] = Field(None, description="A string description of an example payload for this API call.") # <-- CHANGED THIS LINE
     input_mappings: List[InputMapping] = Field(default_factory=list, description="Instructions on how data would be mapped from previous described results.")
 
     # Add a computed property or method to get the effective node ID for graph structure
@@ -68,8 +68,8 @@ class GraphOutput(BaseModel):
 
 class AddEdgeParams(BaseModel):
     """Parameters required for the add_edge tool."""
-    from_node: str = Field(..., description="The operationId or display_name of the source node.") # Updated description
-    to_node: str = Field(..., description="The operationId or display_name of the target node.") # Updated description
+    from_node: str = Field(..., description="The operationId or display_name of the source node.")
+    to_node: str = Field(..., description="The operationId or display_name of the target node.")
     description: Optional[str] = Field(None, description="Optional description for the new edge.")
 
 class GeneratePayloadsParams(BaseModel):
@@ -102,7 +102,8 @@ class BotState(BaseModel):
     # API Identification and Payload Generation (Descriptions)
     identified_apis: Optional[List[Dict[str, Any]]] = Field(None, description="List of APIs identified as potentially relevant by the LLM.")
     # Renamed from generated_payloads to payload_descriptions for clarity
-    payload_descriptions: Optional[Dict[str, Any]] = Field(None, description="Dictionary mapping operationId to generated example payload descriptions.")
+    # This field stores a dictionary where keys are operationIds and values are the *string* descriptions
+    payload_descriptions: Optional[Dict[str, str]] = Field(None, description="Dictionary mapping operationId to generated example payload descriptions (string).") # <-- UPDATED DESCRIPTION
     payload_generation_instructions: Optional[str] = Field(None, description="User instructions captured for payload description.")
 
     # Execution Graph Description

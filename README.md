@@ -1,130 +1,32 @@
-# open_api_execution_gen_ai
-
-Prerequisites:
-
-Python: Ensure you have Python installed (version 3.8 or later is recommended).
-Install Libraries: You'll need to install the required libraries. Open your terminal or command prompt and run:
-Bash
-
-pip install pydantic tenacity langgraph langchain # Or langchain-openai, langchain-core depending on your LLM setup
-# Add any specific library for your chosen LLM (e.g., openai, azure-identity, google-cloud-aiplatform)
-# Example for OpenAI:
-# pip install openai
-# Example for Azure OpenAI:
-# pip install openai azure-identity
-Note: jsonschema is used internally by Pydantic, so it should be installed as a dependency.
-Save the Code:
-
-Create a new directory for your project (e.g., openapi_llm_assistant).
-Inside this directory, save each code block I provided into its corresponding file name:
-models.py (from the first code block)
-utils.py (from the second code block)
-core_logic.py (from the third code block)
-router.py (from the fourth code block)
-graph.py (from the fifth code block)
-main.py (from the sixth code block)
-Replace Placeholder LLMs:
-
-This is the most crucial step. Open main.py.
-
-Find the PlaceholderLLM class and the lines where router_llm and worker_llm are initialized:
-
-Python
-
-# --- Placeholder LLM Initialization ---
-# Replace with your actual LLM setup...
-# ... (PlaceholderLLM class definition) ...
-
-# Initialize placeholder LLMs
-router_llm = PlaceholderLLM("RouterLLM")
-worker_llm = PlaceholderLLM("WorkerLLM")
-Delete the PlaceholderLLM class definition.
-
-Replace the initialization lines with your actual LLM client setup. Make sure the LLM objects you create have an .invoke() method that's compatible with the llm_call_helper function in utils.py.
-
-Example using LangChain with OpenAI:
-
-Python
-
-# main.py (replace placeholder section)
+OpenAPI Specification Analyzer AgentThis project implements an AI agent using LangGraph that can analyze and describe OpenAPI (v3) specifications. It leverages Large Language Models (LLMs) to understand the structure of an API, identify relevant endpoints, describe potential workflows, and answer questions about the specification.Important: This agent focuses solely on analyzing and describing the OpenAPI specification. It does not execute any actual API calls.FeaturesParse OpenAPI Specs: Accepts OpenAPI v3 specifications in YAML or JSON format.Summarize Specs: Generates human-readable summaries of the API's capabilities.Identify APIs: Identifies relevant API operations based on user goals or general analysis.Describe Payloads: Generates natural language descriptions of example request payloads for API operations (does not create executable data).Describe Workflows: Generates execution graph descriptions (as a Directed Acyclic Graph - DAG) outlining potential sequences of API calls and data dependencies based on the spec and user goals.Answer Questions: Responds to user queries about the loaded spec, identified APIs, or the described workflow graph.Stateful Conversation: Remembers the loaded spec and generated artifacts across multiple turns within a session using LangGraph's checkpointing.Caching: Caches parsed schemas to speed up processing of previously seen specifications.PrerequisitesPython: Version 3.8 or later recommended.LLM Access: API keys and necessary libraries for your chosen Large Language Model provider (e.g., OpenAI, Google Gemini, Azure OpenAI).Install Libraries:pip install pydantic langgraph langchain diskcache
+# Add your specific LLM client library, e.g.:
+# pip install langchain-openai
+# pip install langchain-google-genai
+# pip install python-dotenv # If using .env for API keys
+SetupSave the Code:Create a new directory for your project (e.g., openapi_analyzer).Save the provided Python files (models.py, utils.py, core_logic.py, router.py, graph.py, main.py) into this directory.Save the provided requirements.txt and this README.md.Replace Placeholder LLMs:Crucial Step: Open main.py.Locate the initialize_llms function and the PlaceholderLLM class definition within it.Delete the PlaceholderLLM class definition.Replace the placeholder initializations (router_llm = PlaceholderLLM(...), worker_llm = PlaceholderLLM(...)) with your actual LLM client setup (e.g., using ChatOpenAI, ChatGoogleGenerativeAI, AzureChatOpenAI from LangChain).Ensure the LLM objects you create have an .invoke() method compatible with the llm_call_helper function in utils.py.Configure your API keys securely (environment variables are recommended, potentially using python-dotenv and a .env file).Example using LangChain with OpenAI (replace placeholders):# main.py -> initialize_llms() function
 import os
 from langchain_openai import ChatOpenAI
+# from dotenv import load_dotenv
+# load_dotenv() # Uncomment if using .env file
 
 # Load your API keys (best practice is environment variables)
-# os.environ["OPENAI_API_KEY"] = "your_openai_api_key"
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+     logger.critical("OPENAI_API_KEY environment variable not set.")
+     raise ValueError("Missing OpenAI API Key")
 
-# Initialize actual LLMs
 try:
-    # You might use different models or configurations for router vs worker
-    router_llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.0)
-    worker_llm = ChatOpenAI(model="gpt-4", temperature=0.2) # Maybe a more powerful model for complex tasks
+    # Use appropriate models for routing and core tasks
+    router_llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.0, api_key=openai_api_key)
+    worker_llm = ChatOpenAI(model="gpt-4-turbo", temperature=0.1, api_key=openai_api_key) # More capable model for analysis
     logger.info("Initialized OpenAI LLMs.")
+    return router_llm, worker_llm
 except Exception as e:
     logger.critical(f"Failed to initialize LLMs: {e}. Check API keys and library setup.", exc_info=True)
-    exit(1)
-
-# --- Main Execution ---
-# ... (rest of the main.py code) ...
-Example using LangChain with Azure OpenAI:
-
-Python
-
-# main.py (replace placeholder section)
-import os
-from langchain_openai import AzureChatOpenAI
-
-# Load your Azure credentials (best practice is environment variables)
-# os.environ["AZURE_OPENAI_API_KEY"] = "your_azure_api_key"
-# os.environ["AZURE_OPENAI_ENDPOINT"] = "your_azure_endpoint"
-# os.environ["OPENAI_API_VERSION"] = "your_api_version" # e.g., "2023-07-01-preview"
-
-# Initialize actual LLMs
-try:
-    # Specify your deployment names
-    router_llm = AzureChatOpenAI(
-        deployment_name="your_router_deployment_name", # e.g., gpt-35-turbo
-        temperature=0.0
-    )
-    worker_llm = AzureChatOpenAI(
-        deployment_name="your_worker_deployment_name", # e.g., gpt-4
-        temperature=0.2
-    )
-    logger.info("Initialized Azure OpenAI LLMs.")
-except Exception as e:
-    logger.critical(f"Failed to initialize LLMs: {e}. Check API keys, endpoint, version, deployment names, and library setup.", exc_info=True)
-    exit(1)
-
-# --- Main Execution ---
-# ... (rest of the main.py code) ...
-Run the Script:
-
-Navigate to your project directory (openapi_llm_assistant) in your terminal.
-Execute the main.py script:
-Bash
-
-python main.py
-Interact:
-
-The script will start, initialize the LLMs (the real ones now!), build the graph, and print:
-Starting new session: <some-uuid>
+    raise
+Running the AgentNavigate to your project directory (openapi_analyzer) in your terminal.Execute the main.py script:python main.py
+The script will start, initialize the (real) LLMs, build the graph, and prompt you for input:Starting new session: <some-uuid>
 Enter your OpenAPI spec, questions, or commands. Type 'quit' to exit.
 
 You:
-Now you can interact with it:
-Paste an OpenAPI Spec: Paste your YAML or JSON spec directly. The router should detect it and trigger parse_openapi_spec.
-Ask for Graph: "generate the execution graph" or "create a workflow for creating and then updating a user".
-Ask for Payloads: "generate example payloads"
-Modify Graph: "add edge createUser to getUser"
-Ask Questions: "describe the graph", "validate the graph", "show the graph json"
-Type quit to exit the interactive loop.
-The application will use the LLMs to understand your input, route it to the correct tool function (core_logic.py), execute the logic (often involving another LLM call), update the state, and provide a response. State for your session is saved between turns in the .state_cache directory. Resolved schemas are cached in .openapi_cache.
-
-
-
-
-
-You: what all apis are there
-
-
-
-Assistant:
+Interacting with the AgentProvide an OpenAPI Spec: Paste your YAML or JSON spec directly into the prompt. The agent should detect and parse it.Ask for Workflow Description: "Generate the execution graph description" or "Describe a workflow for creating and then getting a user".Ask for Payload Descriptions: "Generate example payload descriptions for the user APIs".Ask Questions: "Describe the graph", "Show the graph description json", "What endpoints are available for managing products?", "Summarize the API".Type quit to exit the interactive loop.The agent uses LLMs to understand your input, routes it through the defined graph nodes (core_logic.py), updates its internal state, and provides a natural language response. Remember, all outputs are descriptions based on the spec, not results of actual API calls. Session state is maintained using checkpointing (persisted in memory by default). Resolved schemas are cached in the .openapi_cache directory.

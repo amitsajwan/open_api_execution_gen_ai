@@ -130,7 +130,13 @@ class BotState(BaseModel):
     response: Optional[str] = Field(None, description="Intermediate response message set by nodes (e.g., 'Schema parsed successfully'). Cleared by responder.")
 
     # LangGraph internal key for routing - exclude from serialization
-    __next__: Optional[str] = Field(None, exclude=True, description="LangGraph internal key indicating the next node.") # <-- ADDED THIS LINE
+    next_step: Optional[str] = Field(
+        None,
+        alias="__next__",
+        exclude=True,
+        description="Internal: the next LangGraph node to execute, set by router or nodes."
+    )
+
 
 
     # Internal working memory

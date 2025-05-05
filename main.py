@@ -1,22 +1,12 @@
+# filename: main.py
 import logging
 import uuid
 import json
-import os # Added for environment variables
-from typing import Any, Dict
+import os
+from typing import Any, Dict, Optional # Import Optional
 
-# --- LLM Integration (Replace Placeholder) ---
-# Import your preferred LLM client library
-# from langchain_openai import ChatOpenAI
-# from langchain_google_genai import ChatGoogleGenerativeAI
-# Example:
-# from some_llm_library import ChatModel # Hypothetical
-
-# Assume graph.py contains build_graph
 from graph import build_graph
-# Assume models.py contains BotState
-from models import BotState
-# Assume utils.py has save_state, load_state (though not explicitly used in loop if checkpointer handles it)
-# from utils import save_state, load_state
+from models import BotState # Ensure BotState is imported
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO,
@@ -25,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- LLM Initialization (NEEDS ACTUAL IMPLEMENTATION) ---
+# ... (keep initialize_llms as is or replace with your actual LLM setup)
 def initialize_llms():
     """
     Initializes and returns the router and worker LLM instances.
@@ -58,10 +49,30 @@ def initialize_llms():
             def invoke(self, prompt: Any, **kwargs) -> Any:
                 logger.warning(f"Using {self.name}. Needs replacement.")
                 # Simplified simulation logic from original main.py
+                # This placeholder won't perfectly simulate the responses needed
+                # for the new intermediate messages, but allows the code structure to run.
                 prompt_str = str(prompt)
                 if "Determine the most appropriate next action" in prompt_str: return "handle_unknown"
-                if "Parse the following OpenAPI specification" in prompt_str: return '{"openapi": "3.0.0", "info": {"title": "Simulated", "version": "1.0"}, "paths": {}}'
+                if "Parse the following OpenAPI specification" in prompt_str:
+                    # Simulate setting a response during parsing
+                    return '{"response": "Simulating: Parsed OpenAPI spec.", "openapi": "3.0.0", "info": {"title": "Simulated", "version": "1.0"}, "paths": {}}'
+                if "identify the key API endpoints" in prompt_str:
+                     return '{"response": "Simulating: Identified APIs." , "identified_apis": [{"operationId": "simulatedOp", "method": "get", "path": "/simulated"}]}'
+                if "describe example request payloads" in prompt_str:
+                     return '{"response": "Simulating: Described payloads.", "payload_descriptions": {"simulatedOp": "Simulated payload description"}}'
+                if "Generate a description of an API execution workflow graph" in prompt_str:
+                     return '{"response": "Simulating: Generated graph description." , "nodes": [{"operationId": "simulatedOp", "payload_description": "...", "input_mappings": []}], "edges": [], "description": "Simulated graph description."}'
+                if "provide a concise, natural language description of the workflow" in prompt_str:
+                     return '{"response": "Simulating: Described workflow.", "description": "Simulated workflow description."}'
+                if "question" in prompt_str:
+                     return '{"response": "Simulating: Answered query."}'
+
+
                 return f"Placeholder response from {self.name}"
+
+            # Add necessary methods for LangChain integration if your actual LLM requires them
+            # e.g., _call, _acall, ainvoke, batch, abatch
+            # For basic invoke, we only need invoke.
         router_llm = PlaceholderLLM("RouterLLM")
         worker_llm = PlaceholderLLM("WorkerLLM")
         # --- END OF PLACEHOLDER ---
@@ -72,10 +83,6 @@ def initialize_llms():
 
         logger.info("LLM clients initialized (using placeholders - replace!).")
         return router_llm, worker_llm
-
-    except Exception as e:
-        logger.critical(f"Failed to initialize LLM clients: {e}", exc_info=True)
-        raise # Re-raise critical error
 
 
 # --- Main Execution ---
@@ -111,41 +118,49 @@ if __name__ == "__main__":
         # Prepare the input state for the graph
         # The checkpointer handles loading/merging previous state for the session
         config = {"configurable": {"thread_id": session_id}}
-        current_input = {"user_input": user_input, "session_id": session_id} # Pass session_id here if needed by models/logic
+        current_input = {"user_input": user_input, "session_id": session_id}
 
         try:
             # Stream events from the graph execution
             final_state_snapshot = None
-            print("\nAssistant:", end=" ", flush=True)
+            print("\nAssistant:") # Start assistant output line
 
             # Use stream to get intermediate steps and final result
             # stream_mode="values" yields the full state object after each node completes
+            # We will now process these intermediate states
             events = app.stream(current_input, config=config, stream_mode="values")
-            for final_state_snapshot in events:
-                 # Optional: Log intermediate node completion for debugging
-                 # You might need more complex logic to determine *which* node just finished
-                 # logger.debug(f"Intermediate state update after a node.")
-                 pass # We only care about the *final* state from the stream
 
-            # Process the final state after the stream completes
+            # Process events to print intermediate responses
+            for intermediate_state in events:
+                 # Check if the node set a response message
+                 if isinstance(intermediate_state, dict):
+                     response_message = intermediate_state.get("response")
+                     # Print intermediate messages as they appear
+                     if response_message:
+                         print(f"  - {response_message}")
+                         # Clear the response field in the state copy to avoid re-printing
+                         # Note: This doesn't modify the actual state passed to the next node
+                         intermediate_state["response"] = None # Clear message after displaying
+
+                 # Keep track of the latest state snapshot
+                 final_state_snapshot = intermediate_state
+
+            # After the stream completes, the final response is in the last state snapshot
             if final_state_snapshot and isinstance(final_state_snapshot, dict):
-                 # The final response should ideally be in 'final_response' after the responder runs
                  final_response = final_state_snapshot.get("final_response")
                  if final_response:
-                     print(f"{final_response}")
+                     print(f"\nFinal Result: {final_response}") # Indicate final result
                  else:
-                     # Fallback to 'response' if 'final_response' isn't set (e.g., error before responder)
-                     intermediate_response = final_state_snapshot.get("response")
-                     if intermediate_response:
-                          print(f"{intermediate_response}")
-                     else:
-                          print("Sorry, something went wrong, and I couldn't generate a final response.")
-                          logger.error(f"Graph execution finished, but 'final_response' and 'response' were empty in the final state.")
+                     # Fallback if 'final_response' isn't set (e.g., error before responder)
+                     # We already printed intermediate responses, so maybe just a generic message
+                     print("\nProcessing finished.")
+                     logger.warning(f"Graph execution finished, but 'final_response' was empty in the final state.")
+
 
                  # Log final state details for debugging
                  logger.debug(f"Final state for session/thread {session_id}: {json.dumps(final_state_snapshot, indent=2, default=str)}")
             else:
-                 print("Sorry, something went wrong, and I don't have a valid final state.")
+                 print("\nSorry, something went wrong, and I don't have a valid final state.")
                  logger.error(f"Graph execution finished without a valid final state dictionary. Last event: {final_state_snapshot}")
 
         except Exception as e:

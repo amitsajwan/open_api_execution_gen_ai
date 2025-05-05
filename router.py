@@ -53,24 +53,28 @@ class OpenAPIRouter:
         logger.info("OpenAPIRouter initialized (without execution capabilities).")
 
 
-    def route(self, state: BotState) -> str: # Return type hint is str for the node name
+    def route(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
         """
-        Determines the user's high-level intent and returns the name of the
-        next node in the graph to transition to.
+        Determines the user's high-level intent and returns a dictionary
+        containing state updates and the name of the next node in the graph
+        under the '__next__' key.
         Updates state.intent, state.previous_intent, state.loop_counter, and state.input_is_spec.
-        Returns the name of the next node.
+        Returns a dictionary of state updates including {'__next__': next_node_name}.
         """
         user_input = state.user_input
         previous_intent = state.previous_intent
         loop_counter = state.loop_counter
 
         # Initialize determined_intent to None at the start
-        determined_intent: Optional[str] = None # <-- INITIALIZED HERE
+        determined_intent: Optional[str] = None
+
+        # Initialize state updates dictionary
+        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
 
         # Reset the input_is_spec flag at the start of routing
-        state.input_is_spec = False
+        updates['input_is_spec'] = False
         # Clear extracted params from previous turn
-        state.extracted_params = None
+        updates['extracted_params'] = None # Clear extracted params from previous turn
 
 
         if not user_input:
@@ -136,7 +140,7 @@ class OpenAPIRouter:
                       logger.info("Router heuristic detected potential NEW OpenAPI spec input.")
                       state.update_scratchpad_reason("router", "Heuristic detected potential new spec. Routing to parse_openapi_spec.")
                       determined_intent = "parse_openapi_spec"
-                      state.input_is_spec = True # Set the flag for the parser node
+                      updates['input_is_spec'] = True # Set the flag in updates
                  else:
                       logger.debug("Input not detected as spec by heuristic or schema exists and input is short. Using LLM for general intent.")
                       # Fall through to LLM intent determination if not a spec by heuristic or short input with existing schema
@@ -194,7 +198,8 @@ class OpenAPIRouter:
                     determined_intent = "handle_unknown"
                     state.update_scratchpad_reason("router", f"LLM call failed: {e}. Defaulted to '{determined_intent}'.")
                     # Set an intermediate response here if desired, although handle_unknown node will generate one
-                    # state.response = "An internal error occurred while trying to understand your request. Please try again."
+                    # updates['response'] = "An internal error occurred while trying to understand your request. Please try again." # Example
+
 
             # If determined_intent is still None after all checks, it means something went wrong.
             if determined_intent is None: # <-- Final fallback check
@@ -214,23 +219,26 @@ class OpenAPIRouter:
                  logger.error(f"Router detected potential loop (intent '{determined_intent}' repeated {loop_counter} times). Routing to handle_loop.")
                  final_intent = "handle_loop"
                  # Reset counter after routing to handle_loop
-                 state.loop_counter = 0
+                 updates['loop_counter'] = 0 # Reset counter in updates
              else:
                  # Update counter but proceed with the determined intent for now
-                 state.loop_counter = loop_counter
+                 updates['loop_counter'] = loop_counter # Update counter in updates
                  final_intent = determined_intent
         else:
             # Reset loop counter if intent changes or is a final/parse state
-            state.loop_counter = 0
+            updates['loop_counter'] = 0 # Reset counter in updates
             final_intent = determined_intent
             # logger.debug("Router: Intent changed or is final/parse state. Resetting loop counter.")
 
 
-        # Update state for the next turn and for the graph conditional edge
-        state.previous_intent = final_intent # Store the final decision
-        state.intent = final_intent
+        # Update state fields in the updates dictionary
+        updates['previous_intent'] = final_intent # Store the final decision in updates
+        updates['intent'] = final_intent # Store the final decision in updates
 
         logger.info(f"Router routing to: {final_intent}")
 
-        # Return the name of the next node
-        return final_intent
+        # Add the __next__ key to the updates dictionary to control the graph flow
+        updates['__next__'] = final_intent # <-- Add __next__ key
+
+        # Return the dictionary of updates
+        return updates # <-- Return the updates dictionary

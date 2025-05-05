@@ -218,8 +218,11 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
+            logger.debug(f"Raw LLM response for parsing: {llm_response[:500]}...")
+
             # Use parse_llm_json_output_with_model without model for initial schema parsing
             parsed_schema = parse_llm_json_output_with_model(llm_response) # Basic JSON parsing
+            logger.debug(f"Result of parsing LLM response: {parsed_schema is not None and isinstance(parsed_schema, dict)}")
 
             if parsed_schema and isinstance(parsed_schema, dict):
                 updates['openapi_schema'] = parsed_schema

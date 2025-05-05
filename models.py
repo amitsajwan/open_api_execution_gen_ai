@@ -29,7 +29,7 @@ class Node(BaseModel):
     summary: Optional[str] = Field(None, description="Short summary of the operation (from OpenAPI spec).")
     description: Optional[str] = Field(None, description="Detailed description of the operation.")
     # Changed type from Dict[str, Any] to str for payload description
-    payload_description: Optional[str] = Field(None, description="A string description of an example payload for this API call.") # <-- CHANGED THIS LINE
+    payload_description: Optional[str] = Field(None, description="A string description of an example payload for this API call.")
     input_mappings: List[InputMapping] = Field(default_factory=list, description="Instructions on how data would be mapped from previous described results.")
 
     # Add a computed property or method to get the effective node ID for graph structure
@@ -85,7 +85,6 @@ class GenerateGraphParams(BaseModel):
 # --- State Model ---
 
 class BotState(BaseModel):
-    # ... (rest of BotState model remains the same)
     """Represents the full state of the conversation and processing."""
     session_id: str = Field(..., description="Unique identifier for the current session.")
     user_input: Optional[str] = Field(None, description="The latest input from the user.")
@@ -103,7 +102,7 @@ class BotState(BaseModel):
     identified_apis: Optional[List[Dict[str, Any]]] = Field(None, description="List of APIs identified as potentially relevant by the LLM.")
     # Renamed from generated_payloads to payload_descriptions for clarity
     # This field stores a dictionary where keys are operationIds and values are the *string* descriptions
-    payload_descriptions: Optional[Dict[str, str]] = Field(None, description="Dictionary mapping operationId to generated example payload descriptions (string).") # <-- UPDATED DESCRIPTION
+    payload_descriptions: Optional[Dict[str, str]] = Field(None, description="Dictionary mapping operationId to generated example payload descriptions (string).")
     payload_generation_instructions: Optional[str] = Field(None, description="User instructions captured for payload description.")
 
     # Execution Graph Description
@@ -129,6 +128,10 @@ class BotState(BaseModel):
 
     # Output and Communication (Intermediate messages from core_logic nodes)
     response: Optional[str] = Field(None, description="Intermediate response message set by nodes (e.g., 'Schema parsed successfully'). Cleared by responder.")
+
+    # LangGraph internal key for routing - exclude from serialization
+    __next__: Optional[str] = Field(None, exclude=True, description="LangGraph internal key indicating the next node.") # <-- ADDED THIS LINE
+
 
     # Internal working memory
     scratchpad: Dict[str, Any] = Field(default_factory=dict, description="Persistent memory for intermediate results, reasoning, history, planner decisions etc.")

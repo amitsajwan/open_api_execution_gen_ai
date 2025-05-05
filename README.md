@@ -97,7 +97,7 @@ python main.py
 
 ## License
 
-Released under the **MIT License**. See [LICENSE](LICENSE) for details.
+Released under the **AMIT License**. See [LICENSE](LICENSE) for details.
 
 *Last updated: May 5, 2025*
 

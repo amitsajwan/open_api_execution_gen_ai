@@ -3,9 +3,11 @@ import logging
 import uuid
 import json
 import os
-from typing import Any, Dict, Optional # Import Optional
+from typing import Any, Dict, Optional
 
+# Assume graph.py contains build_graph
 from graph import build_graph
+# Assume models.py contains BotState
 from models import BotState # Ensure BotState is imported
 
 # --- Basic Logging Setup ---
@@ -15,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- LLM Initialization (NEEDS ACTUAL IMPLEMENTATION) ---
-# ... (keep initialize_llms as is or replace with your actual LLM setup)
 def initialize_llms():
     """
     Initializes and returns the router and worker LLM instances.
@@ -37,9 +38,11 @@ def initialize_llms():
     try:
         # Replace with your actual LLM instantiation
         # Example:
+        # from langchain_openai import ChatOpenAI
         # router_llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, api_key=openai_api_key)
         # worker_llm = ChatOpenAI(model="gpt-4", temperature=0.1, api_key=openai_api_key)
         # or
+        # from langchain_google_genai import ChatGoogleGenerativeAI
         # worker_llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.1, google_api_key=google_api_key)
 
         # Using PlaceholderLLM for now to allow code execution without real keys
@@ -48,31 +51,63 @@ def initialize_llms():
             def __init__(self, name="PlaceholderLLM"): self.name = name
             def invoke(self, prompt: Any, **kwargs) -> Any:
                 logger.warning(f"Using {self.name}. Needs replacement.")
-                # Simplified simulation logic from original main.py
-                # This placeholder won't perfectly simulate the responses needed
-                # for the new intermediate messages, but allows the code structure to run.
+                # Simplified simulation logic. This needs to match the *expected* output
+                # of the nodes to correctly simulate intermediate messages.
                 prompt_str = str(prompt)
-                if "Determine the most appropriate next action" in prompt_str: return "handle_unknown"
+
+                # Simulate router response (simple string intent)
+                if "Determine the most appropriate next action" in prompt_str:
+                    # Simple check to simulate routing spec input vs question
+                    if any(sig in prompt_str for sig in ['"openapi":', 'swagger:', '{', '-']): # Check for spec signatures in prompt
+                         return "parse_openapi_spec"
+                    elif "list apis" in prompt_str.lower() or "endpoints" in prompt_str.lower():
+                         return "answer_openapi_query"
+                    else:
+                         return "handle_unknown"
+
+                # Simulate core_logic node responses (often setting 'response' and other state fields)
+                # Note: Real LLMs will return a single string, not a JSON dict like this placeholder.
+                # The actual core_logic nodes parse that string and set state fields.
+                # This placeholder's response format is a *simulation* of the state changes a real LLM *causes*
+                # within the core_logic nodes, simplified to make the main loop's print work.
                 if "Parse the following OpenAPI specification" in prompt_str:
-                    # Simulate setting a response during parsing
-                    return '{"response": "Simulating: Parsed OpenAPI spec.", "openapi": "3.0.0", "info": {"title": "Simulated", "version": "1.0"}, "paths": {}}'
+                    # Simulate the output *after* the core_logic node runs the LLM and updates state
+                    return json.dumps({"response": "Simulating: Parsed OpenAPI spec and generated summary.",
+                                       "openapi_schema": {"openapi": "3.0.0", "info": {"title": "Simulated", "version": "1.0"}, "paths": {"/simulated": {"get": {"operationId": "getSimulated", "summary": "Get simulated data"}}}}})
                 if "identify the key API endpoints" in prompt_str:
-                     return '{"response": "Simulating: Identified APIs." , "identified_apis": [{"operationId": "simulatedOp", "method": "get", "path": "/simulated"}]}'
+                     # Simulate state update after identify_apis runs
+                     return json.dumps({"response": "Simulating: Identified relevant APIs.",
+                                        "identified_apis": [{"operationId": "getSimulated", "summary": "Get simulated data", "method": "get", "path": "/simulated"}]})
                 if "describe example request payloads" in prompt_str:
-                     return '{"response": "Simulating: Described payloads.", "payload_descriptions": {"simulatedOp": "Simulated payload description"}}'
+                     # Simulate state update after generate_payloads runs
+                     return json.dumps({"response": "Simulating: Described example payloads.",
+                                        "payload_descriptions": {"getSimulated": {"description": "Example payload description for getSimulated"}}})
                 if "Generate a description of an API execution workflow graph" in prompt_str:
-                     return '{"response": "Simulating: Generated graph description." , "nodes": [{"operationId": "simulatedOp", "payload_description": "...", "input_mappings": []}], "edges": [], "description": "Simulated graph description."}'
+                     # Simulate state update after generate_execution_graph runs
+                     return json.dumps({"response": "Simulating: Generated execution graph description.",
+                                        "execution_graph": {"nodes": [{"operationId": "getSimulated", "display_name": "getSimulated_instance", "payload_description": "...", "input_mappings": []}], "edges": [], "description": "Simulated graph description."}})
                 if "provide a concise, natural language description of the workflow" in prompt_str:
-                     return '{"response": "Simulating: Described workflow.", "description": "Simulated workflow description."}'
-                if "question" in prompt_str:
-                     return '{"response": "Simulating: Answered query."}'
+                     # Simulate state update after describe_graph runs
+                     return json.dumps({"response": "Simulating: Described workflow.",
+                                        "execution_graph": {"nodes": [...], "edges": [...], "description": "Simulated graph description."}}) # Include graph structure if needed downstream
+                if "Answer the user's question" in prompt_str and ("list apis" in prompt_str or "endpoints" in prompt_str):
+                    # Simulate state update after answer_openapi_query runs for "list apis"
+                    # This needs access to state.identified_apis in a real scenario
+                    # For this placeholder, let's just return a canned response simulating listing APIs
+                    simulated_apis = [{'operationId': 'getSimulated', 'summary': 'Get simulated data', 'method': 'get', 'path': '/simulated'}] # Example
+                    api_list_str = "\n".join([f"- {api['operationId']} ({api['method'].upper()} {api['path']}): {api['summary']}" for api in simulated_apis])
+                    return json.dumps({"response": f"Simulating: Found the following APIs:\n{api_list_str}"})
 
 
-                return f"Placeholder response from {self.name}"
+                # Default fallback response for other prompts
+                return "Simulating: Completed a step."
 
-            # Add necessary methods for LangChain integration if your actual LLM requires them
-            # e.g., _call, _acall, ainvoke, batch, abatch
-            # For basic invoke, we only need invoke.
+
+            # For LangChain integration, ensure other required methods (_call, ainvoke, etc.) are present if needed
+            # For this basic synchronous loop, invoke is sufficient if your actual LLM wraps responses.
+            # If your LLM.invoke returns a string directly, the parse_llm_json_output_with_model
+            # in core_logic will handle parsing. The placeholder simulates the *result* of that parsing + state update.
+
         router_llm = PlaceholderLLM("RouterLLM")
         worker_llm = PlaceholderLLM("WorkerLLM")
         # --- END OF PLACEHOLDER ---
@@ -93,7 +128,8 @@ if __name__ == "__main__":
     try:
         router_llm, worker_llm = initialize_llms()
     except Exception:
-        exit(1) # Exit if LLMs can't be initialized
+        # Exit if LLMs can't be initialized - crucial for functionality
+        exit(1)
 
     # Build the LangGraph application
     try:
@@ -120,44 +156,48 @@ if __name__ == "__main__":
         config = {"configurable": {"thread_id": session_id}}
         current_input = {"user_input": user_input, "session_id": session_id}
 
-        try:
-            # Stream events from the graph execution
-            final_state_snapshot = None
-            print("\nAssistant:") # Start assistant output line
+        print("\nAssistant:") # Start assistant output line
 
-            # Use stream to get intermediate steps and final result
-            # stream_mode="values" yields the full state object after each node completes
-            # We will now process these intermediate states
+        # Process the stream of state updates from the graph execution
+        final_state_snapshot = None
+        try:
+            # Use stream_mode="values" to get the full state after each node
+            # For async WebSockets, you would typically use app.astream
             events = app.stream(current_input, config=config, stream_mode="values")
 
             # Process events to print intermediate responses
             for intermediate_state in events:
-                 # Check if the node set a response message
+                 # The state is a dictionary. Check for the 'response' field.
                  if isinstance(intermediate_state, dict):
+                     # Extract intermediate response message
                      response_message = intermediate_state.get("response")
-                     # Print intermediate messages as they appear
+
+                     # If there's an intermediate message, print it
                      if response_message:
                          print(f"  - {response_message}")
-                         # Clear the response field in the state copy to avoid re-printing
-                         # Note: This doesn't modify the actual state passed to the next node
-                         intermediate_state["response"] = None # Clear message after displaying
+                         # Note: We don't modify the state here; we just read it for printing.
+                         # The state object yielded by the stream is a snapshot after a node run.
 
-                 # Keep track of the latest state snapshot
+                 # Keep track of the latest state snapshot for the final response
                  final_state_snapshot = intermediate_state
+
 
             # After the stream completes, the final response is in the last state snapshot
             if final_state_snapshot and isinstance(final_state_snapshot, dict):
+                 # The responder node should have put the final user-facing message here
                  final_response = final_state_snapshot.get("final_response")
+
+                 # Print the final response
                  if final_response:
-                     print(f"\nFinal Result: {final_response}") # Indicate final result
+                     print(f"\nFinal Result: {final_response}")
                  else:
                      # Fallback if 'final_response' isn't set (e.g., error before responder)
-                     # We already printed intermediate responses, so maybe just a generic message
+                     # We've already printed intermediate messages, so this is a last resort.
                      print("\nProcessing finished.")
                      logger.warning(f"Graph execution finished, but 'final_response' was empty in the final state.")
 
 
-                 # Log final state details for debugging
+                 # Log the complete final state for debugging purposes
                  logger.debug(f"Final state for session/thread {session_id}: {json.dumps(final_state_snapshot, indent=2, default=str)}")
             else:
                  print("\nSorry, something went wrong, and I don't have a valid final state.")
@@ -166,46 +206,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"\nAn error occurred during graph execution: {e}")
             logger.critical(f"Error during graph stream/execution: {e}", exc_info=True)
-            # Optionally break the loop or try to recover
+            # Optionally break the loop or try to recover, e.g., reset state config
 
     print("\nSession ended. Goodbye!")
-
-
-async def handle_websocket_message(websocket, path):
-    session_id = # Get or create session ID for the user
-
-    async for message in websocket:
-        user_input = message
-        config = {"configurable": {"thread_id": session_id}}
-        current_input = {"user_input": user_input, "session_id": session_id}
-
-        try:
-            async for intermediate_state in app.astream(current_input, config=config, stream_mode="values"): # Use astream for async
-                 # Process each state update
-                 intermediate_response = intermediate_state.get("response")
-                 if intermediate_response:
-                     # Send intermediate message to user via WebSocket
-                     await websocket.send(json.dumps({"type": "intermediate_message", "content": intermediate_response}))
-
-                 # Keep track of the last state
-                 final_state_snapshot = intermediate_state
-
-            # After the stream finishes, process the final state
-            final_response = final_state_snapshot.get("final_response")
-            if final_response:
-                 # Send the final response message
-                 await websocket.send(json.dumps({"type": "final_response", "content": final_response}))
-            else:
-                 # Handle cases where final_response wasn't set (e.g., error)
-                 await websocket.send(json.dumps({"type": "error", "content": "Processing finished without a final response."}))
-
-            # For specific queries like "list apis", you might need additional logic here
-            # Example: Check user_input and look at final_state_snapshot.get("identified_apis")
-            # This requires knowing the user's original intent *after* the graph completes.
-            # A simpler approach is to let answer_openapi_query format the list into final_response.
-
-
-        except Exception as e:
-            error_message = f"An error occurred: {e}"
-            print(f"Error: {e}")
-            await websocket.send(json.dumps({"type": "error", "content": error_message}))

@@ -33,7 +33,7 @@ class OpenAPIRouter:
         "answer_openapi_query", # User asks a general question about spec/plan
         "handle_unknown", # Intent could not be determined
         "handle_loop", # Detected potential loop in routing
-        "responder", # Can route directly to responder in some cases (e.g., empty input)
+        "responder", # Router might route directly to responder
     ]
 
     # Regex to quickly check if input looks like JSON or YAML spec start
@@ -54,10 +54,11 @@ class OpenAPIRouter:
         logger.info("OpenAPIRouter initialized (without execution capabilities).")
 
 
-    def route(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is Dict[str, Any]
+    def route(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
         """
-        Determines the user's high-level intent and returns a dictionary of state updates
-        including the name of the next node in the graph via the '__next__' key.
+        Determines the user's high-level intent and returns a dictionary
+        containing state updates and the name of the next node in the graph
+        under the '__next__' key.
         Updates state.intent, state.previous_intent, state.loop_counter, and state.input_is_spec.
         Returns a dictionary of state updates including {'__next__': next_node_name}.
         """
@@ -65,16 +66,16 @@ class OpenAPIRouter:
         previous_intent = state.previous_intent
         loop_counter = state.loop_counter
 
-        # Initialize a dictionary to hold state updates
-        updates: Dict[str, Any] = {}
-
         # Initialize determined_intent to None at the start
         determined_intent: Optional[str] = None
 
-        # Reset the input_is_spec flag at the start of routing in updates
+        # Initialize state updates dictionary
+        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+
+        # Reset the input_is_spec flag at the start of routing
         updates['input_is_spec'] = False
-        # Clear extracted params from previous turn in updates
-        updates['extracted_params'] = None
+        # Clear extracted params from previous turn
+        updates['extracted_params'] = None # Clear extracted params from previous turn
 
 
         if not user_input:
@@ -98,7 +99,7 @@ class OpenAPIRouter:
             Answer ONLY with "YES" or "NO".
 
             Current State Summary:
-            - OpenAPI spec loaded: Yes
+            - OpenAPI spec loaded: {'Yes' if state.openapi_schema else 'No'}
             - Schema Summary: {state.schema_summary[:500] + '...' if state.schema_summary else 'None'}
             - Identified APIs: {'Yes' if state.identified_apis else 'No'} ({len(state.identified_apis) if state.identified_apis else 0} found)
             - Execution graph description exists: {'Yes' if state.execution_graph else 'No'}
@@ -140,7 +141,7 @@ class OpenAPIRouter:
                       logger.info("Router heuristic detected potential NEW OpenAPI spec input.")
                       state.update_scratchpad_reason("router", "Heuristic detected potential new spec. Routing to parse_openapi_spec.")
                       determined_intent = "parse_openapi_spec"
-                      updates['input_is_spec'] = True # Set the flag for the parser node in updates
+                      updates['input_is_spec'] = True # Set the flag in updates
                  else:
                       logger.debug("Input not detected as spec by heuristic or schema exists and input is short. Using LLM for general intent.")
                       # Fall through to LLM intent determination if not a spec by heuristic or short input with existing schema
@@ -184,14 +185,8 @@ class OpenAPIRouter:
                         state.update_scratchpad_reason("router", f"LLM returned invalid intent '{llm_response.strip()}'. Defaulted to '{determined_intent}'.")
                     # Prevent LLM from choosing parse_openapi_spec if heuristic didn't catch it and schema exists
                     # or if the input is short. The heuristic is the primary way to detect new specs.
-                    # Also prevent routing to responder directly from LLM unless it's the only option (unlikely with handle_unknown)
                     elif determined_intent == "parse_openapi_spec" and (state.openapi_schema or len(user_input) < 200):
                          logger.warning(f"Router LLM chose '{determined_intent}' unexpectedly (schema exists or input is short). Overriding to handle_unknown.")
-                         determined_intent = "handle_unknown"
-                         state.update_scratchpad_reason("router", f"LLM chose '{determined_intent}' unexpectedly. Defaulted to '{determined_intent}'.")
-                    # Add a check to prevent routing directly to responder unless it's the default fallback
-                    elif determined_intent == "responder":
-                         logger.warning(f"Router LLM chose '{determined_intent}' unexpectedly. Overriding to handle_unknown.")
                          determined_intent = "handle_unknown"
                          state.update_scratchpad_reason("router", f"LLM chose '{determined_intent}' unexpectedly. Defaulted to '{determined_intent}'.")
                     else:
@@ -204,7 +199,8 @@ class OpenAPIRouter:
                     determined_intent = "handle_unknown"
                     state.update_scratchpad_reason("router", f"LLM call failed: {e}. Defaulted to '{determined_intent}'.")
                     # Set an intermediate response here if desired, although handle_unknown node will generate one
-                    # updates['response'] = "An internal error occurred while trying to understand your request. Please try again."
+                    # updates['response'] = "An internal error occurred while trying to understand your request. Please try again." # Example
+
 
             # If determined_intent is still None after all checks, it means something went wrong.
             if determined_intent is None: # <-- Final fallback check
@@ -216,7 +212,6 @@ class OpenAPIRouter:
         # --- Apply Loop Detection based on determined_intent ---
         # Only apply loop detection if the intent is not handle_unknown or handle_loop itself
         # and not parse_openapi_spec (which might be a valid repeat if user provides multiple specs)
-        # and not responder (which is a terminal state)
         if determined_intent == previous_intent and determined_intent not in ["handle_unknown", "handle_loop", "parse_openapi_spec", "responder"]:
              # Increment loop counter if the same non-final, non-parse intent repeats
              loop_counter += 1
@@ -224,15 +219,15 @@ class OpenAPIRouter:
              if loop_counter >= 3: # Threshold for loop detection
                  logger.error(f"Router detected potential loop (intent '{determined_intent}' repeated {loop_counter} times). Routing to handle_loop.")
                  final_intent = "handle_loop"
-                 # Reset counter after routing to handle_loop in updates
-                 updates['loop_counter'] = 0
+                 # Reset counter after routing to handle_loop
+                 updates['loop_counter'] = 0 # Reset counter in updates
              else:
-                 # Update counter but proceed with the determined intent for now in updates
-                 updates['loop_counter'] = loop_counter
+                 # Update counter but proceed with the determined intent for now
+                 updates['loop_counter'] = loop_counter # Update counter in updates
                  final_intent = determined_intent
         else:
-            # Reset loop counter if intent changes or is a final/parse state in updates
-            updates['loop_counter'] = 0
+            # Reset loop counter if intent changes or is a final/parse state
+            updates['loop_counter'] = 0 # Reset counter in updates
             final_intent = determined_intent
             # logger.debug("Router: Intent changed or is final/parse state. Resetting loop counter.")
 

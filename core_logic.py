@@ -11,13 +11,14 @@ from models import (
 # Assuming utils.py defines helpers
 from utils import (
     llm_call_helper, load_cached_schema, save_schema_to_cache,
-    get_cache_key, check_for_cycles, parse_llm_json_output
+    get_cache_key, check_for_cycles, parse_llm_json_output_with_model
 )
 
 # Module-level logger
 logger = logging.getLogger(__name__)
 
 class OpenAPICoreLogic:
+    # ... (keep __init__, _generate_llm_schema_summary as is)
     """
     Handles the core tasks of parsing OpenAPI specs, generating payload
     descriptions, creating execution graph descriptions, and managing
@@ -133,6 +134,9 @@ class OpenAPICoreLogic:
         tool_name = "parse_openapi_spec"
         state.update_scratchpad_reason(tool_name, "Starting OpenAPI spec parsing.")
         logger.debug("Executing parse_openapi_spec node.")
+        # Set an intermediate response message
+        state.response = "Parsing OpenAPI specification..."
+
 
         # Check if the router flagged the input as a spec
         if not state.input_is_spec:
@@ -180,6 +184,7 @@ class OpenAPICoreLogic:
             # If schema is loaded from cache, generate or retrieve the summary as well
             # For simplicity, we'll regenerate the summary from the cached schema.
             state.schema_summary = self._generate_llm_schema_summary(state.openapi_schema)
+            # Update response message
             state.response = "Successfully loaded parsed OpenAPI schema from cache and generated summary."
             state.update_scratchpad_reason(tool_name, f"Loaded schema from cache (key: {cache_key}). Generated summary.")
             logger.info("Loaded OpenAPI schema from cache and generated summary.")
@@ -188,6 +193,9 @@ class OpenAPICoreLogic:
         # If not cached, use LLM to parse
         state.update_scratchpad_reason(tool_name, "Schema not found in cache. Using LLM to parse.")
         logger.info("Parsing OpenAPI schema using LLM.")
+        # Update response message
+        state.response = "Schema not found in cache. Using LLM to parse..."
+
         prompt = f"""
         Parse the following OpenAPI specification text (which can be in YAML or JSON format) into a fully resolved JSON object.
         Ensure all internal `$ref` links are resolved if possible, embedding the referenced schema objects directly.
@@ -204,18 +212,21 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            parsed_schema = parse_llm_json_output(llm_response) # Basic JSON parsing
+            # Use parse_llm_json_output without model for initial schema parsing
+            parsed_schema = parse_llm_json_output_with_model(llm_response) # Basic JSON parsing
 
             if parsed_schema and isinstance(parsed_schema, dict):
                 state.openapi_schema = parsed_schema
                 # Successfully parsed, now generate the summary using the LLM
                 state.schema_summary = self._generate_llm_schema_summary(state.openapi_schema)
+                # Update response message
                 state.response = "Successfully parsed OpenAPI specification and generated summary."
                 state.update_scratchpad_reason(tool_name, f"LLM parsed schema and generated summary. Keys: {list(parsed_schema.keys())}")
                 logger.info("LLM successfully parsed OpenAPI schema and generated summary.")
                 # Save the newly parsed schema to cache
                 save_schema_to_cache(cache_key, parsed_schema)
             else:
+                # Update response message
                 state.response = "Error: LLM did not return a valid JSON object for the OpenAPI schema. Please check the format of your specification."
                 state.update_scratchpad_reason(tool_name, f"LLM parsing failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to parse OpenAPI spec into valid JSON. Response: {llm_response[:500]}")
@@ -224,6 +235,7 @@ class OpenAPICoreLogic:
                 state.schema_cache_key = None # Clear cache key as parsing failed
 
         except Exception as e:
+            # Update response message
             state.response = f"Error during OpenAPI parsing LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for OpenAPI parsing: {e}", exc_info=True)
@@ -244,6 +256,8 @@ class OpenAPICoreLogic:
         tool_name = "plan_execution"
         state.update_scratchpad_reason(tool_name, "Starting execution planning (description only).")
         logger.debug("Executing plan_execution node.")
+        state.response = "Generating execution plan description..."
+
 
         if not state.openapi_schema:
             state.response = "Error: Cannot plan execution without a parsed OpenAPI schema."
@@ -279,7 +293,8 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            steps = parse_llm_json_output(llm_response)
+            # Use parse_llm_json_output without model for list of strings
+            steps = parse_llm_json_output_with_model(llm_response)
 
             # Basic validation: ensure steps is a list of strings
             if isinstance(steps, list) and all(isinstance(s, str) for s in steps):
@@ -331,6 +346,8 @@ class OpenAPICoreLogic:
         tool_name = "identify_apis"
         state.update_scratchpad_reason(tool_name, "Starting API identification.")
         logger.debug("Executing identify_apis node.")
+        state.response = "Identifying relevant APIs..."
+
 
         if not state.openapi_schema:
             state.response = "Error: Cannot identify APIs without a parsed OpenAPI schema. Please provide/parse a spec first."
@@ -363,7 +380,8 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            identified_apis = parse_llm_json_output(llm_response) # Expecting a list
+            # Use parse_llm_json_output without model for list of dicts
+            identified_apis = parse_llm_json_output_with_model(llm_response) # Expecting a list
 
             if identified_apis and isinstance(identified_apis, list):
                 # Basic validation of list items (check for required keys)
@@ -409,6 +427,8 @@ class OpenAPICoreLogic:
         tool_name = "generate_payloads"
         state.update_scratchpad_reason(tool_name, "Starting payload generation (description only).")
         logger.debug("Executing generate_payloads node (description only).")
+        state.response = "Generating example payload descriptions..."
+
 
         if not state.openapi_schema:
             state.response = "Error: Cannot generate payload descriptions without a parsed OpenAPI schema."
@@ -486,7 +506,8 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            described_payloads = parse_llm_json_output(llm_response) # Expecting a dict
+            # Use parse_llm_json_output without model for dict
+            described_payloads = parse_llm_json_output_with_model(llm_response) # Expecting a dict
 
             if described_payloads and isinstance(described_payloads, dict):
                 # Store the descriptions in the renamed state field
@@ -519,6 +540,8 @@ class OpenAPICoreLogic:
         tool_name = "generate_execution_graph"
         state.update_scratchpad_reason(tool_name, "Starting execution graph generation (description only).")
         logger.debug("Executing generate_execution_graph node (description only).")
+        state.response = "Generating execution graph description..."
+
 
         if not state.openapi_schema:
             state.response = "Error: Cannot generate execution graph description without a parsed OpenAPI schema."
@@ -596,31 +619,32 @@ class OpenAPICoreLogic:
         Instructions for Graph Description Generation:
         1. Analyze the relationships and potential dependencies between the API operations based on the schema, common workflow patterns (like CRUD), and the user's goal/instructions.
         2. Determine a logical sequence of API calls to achieve the goal. Think step-by-step about data flow (e.g., needing an ID from a 'create' response description for a subsequent 'get' or 'update' call description).
-        3. Represent this workflow description as a graph with nodes and edges.
-        4. Nodes: Each node should correspond to an API operation. Include its 'operationId', 'summary', and optionally the 'payload_description' if available and relevant. Use operationIds found in the schema summary.
-           **IMPORTANT:** For each node that would require input parameters derived from previous described steps, include an `input_mappings` list. Each item in this list should be an object with:
-           - `source_operation_id`: The `operationId` of the node whose described result *would* contain the required data.
+        3. Represent this workflow description as a DAG (no circular dependencies). Emphasize creating a valid DAG. If a potential cycle exists (e.g., repeatedly checking status), represent it logically as a sequence in the description or note the pattern in the graph description text, but DO NOT create a circular graph structure in the JSON output.
+        4. Nodes: Each node should correspond to an API operation. Include its 'operationId', 'summary', and optionally the 'payload_description' if available and relevant.
+           **IMPORTANT:** If an API operation is called multiple times in the workflow description, generate a unique `display_name` for each instance (e.g., "getUserDetails_afterCreate", "getUserDetails_afterUpdate") in addition to the `operationId`. Use the `display_name` as the unique identifier for the node in edges and input mappings if provided, otherwise use the `operationId`.
+           For each node that would require input parameters derived from previous described steps, include an `input_mappings` list. Each item in this list should be an object with:
+           - `source_operation_id`: The `operationId` OR `display_name` of the previous node whose described result *would* contain the required data. Use the unique identifier of the source node instance.
            - `source_data_path`: A JSONPath expression description (e.g., `$.id`, `$.items[0].name`, `$.data.token`) to describe how the specific data field *would* be extracted from the source node's *described result*.
            - `target_parameter_name`: The name of the parameter in the current node's API call description that this data maps to.
            - `target_parameter_in`: The location of the target parameter (`path`, `query`, `header`, `cookie`).
            - `transformation`: (Optional) A brief description if the data would need transformation (e.g., "convert to string", "format as date").
 
-        5. Edges: Each edge should represent a dependency or sequential step description. Define `from_node` and `to_node` using the operationIds. Add a brief `description` for the edge if the dependency reason is clear (e.g., "Data dependency: describes using ID from create response"). Ensure edges align with the `input_mappings` descriptions.
-        6. Describe the graph such that it's a DAG (no circular dependencies). If a potential cycle exists (e.g., repeatedly checking status), represent it logically in the description or note the pattern in the graph description text.
-        7. Provide a brief natural language `description` of the overall workflow described by the graph.
+        5. Edges: Each edge should represent a dependency or sequential step description. Define `from_node` and `to_node` using the unique identifier of the source and target nodes (the `display_name` if present, otherwise the `operationId`). Add a brief `description` for the edge if the dependency reason is clear (e.g., "Data dependency: describes using ID from create response"). Ensure edges align with the `input_mappings` descriptions and represent a DAG.
+        6. Provide a brief natural language `description` of the overall workflow described by the graph.
 
         Output Format:
-        Output ONLY a single JSON object matching the GraphOutput structure (including `nodes`, `edges`, `description`). The content should be descriptions, not instructions for live execution. Ensure nodes use the `payload_description` field.
+        Output ONLY a single JSON object matching the GraphOutput structure (including `nodes`, `edges`, `description`). The content should be descriptions, not instructions for live execution. Ensure nodes use the `payload_description` field. Use the `display_name` field in nodes if multiple instances of the same operation are used. Reference nodes in edges and mappings using their `display_name` if provided, otherwise their `operationId`.
         ```json
         {{
           "nodes": [
             {{
               "operationId": "...",
+              "display_name": "...", // Include if operationId is repeated
               "summary": "...",
               "payload_description": "...", // This should be the string description
               "input_mappings": [
                 {{
-                  "source_operation_id": "...",
+                  "source_operation_id": "...", // operationId or display_name of source node
                   "source_data_path": "...",
                   "target_parameter_name": "...",
                   "target_parameter_in": "...",
@@ -631,12 +655,12 @@ class OpenAPICoreLogic:
             }},
             ...
           ],
-          "edges": [ {{ "from_node": "opId1", "to_node": "opId2", "description": "..." }}, ... ],
+          "edges": [ {{ "from_node": "nodeId1", "to_node": "nodeId2", "description": "..." }}, ... ], // nodeId is display_name or operationId
           "description": "Overall workflow description..."
         }}
         ```
-        Ensure all `operationId`s used in nodes and edges exist in the schema summary.
-        Ensure `source_operation_id` in mappings refers to a preceding node in the planned sequence description.
+        Ensure all node identifiers used in nodes, edges, and input mappings are unique within the graph and correspond to a defined node.
+        Ensure `source_operation_id` in mappings refers to a preceding node instance in the planned sequence description using its unique identifier.
         Ensure `target_parameter_name` and `target_parameter_in` match parameters expected by the target operation according to the schema summary.
 
         Generated Execution Graph Description (JSON Object):
@@ -646,28 +670,29 @@ class OpenAPICoreLogic:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             # Use parse_llm_json_output with the expected model for validation
             # The model validation will now expect payload_description to be a string
-            graph_output = parse_llm_json_output(llm_response, expected_model=GraphOutput)
+            graph_output = parse_llm_json_output_with_model(llm_response, expected_model=GraphOutput)
 
             if graph_output and isinstance(graph_output, GraphOutput):
-                # Validate graph structure and check for cycles
-                node_ids = {node.operationId for node in graph_output.nodes}
+                # Validate graph structure and check for cycles using effective_id
+                node_ids = {node.effective_id for node in graph_output.nodes} # Use effective_id
                 valid_graph_structure = True
                 error_details = []
 
-                # Validate edges
+                # Validate edges using effective_id
                 for edge in graph_output.edges:
                      if edge.from_node not in node_ids or edge.to_node not in node_ids:
                           error_details.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
                           valid_graph_structure = False
 
-                # Validate mappings (basic checks)
+                # Validate mappings (basic checks) using effective_id
                 for node in graph_output.nodes:
                     for mapping in node.input_mappings:
-                        if mapping.source_operation_id not in node_ids:
-                             error_details.append(f"Mapping in node '{node.operationId}' references non-existent source node: '{mapping.source_operation_id}'")
+                        if mapping.source_operation_id not in node_ids: # Check against effective_ids
+                             error_details.append(f"Mapping in node '{node.effective_id}' references non-existent source node: '{mapping.source_operation_id}'")
                              valid_graph_structure = False
                         # More detailed validation could check target_parameter_name/in against schema here
 
+                # Pass GraphOutput directly to check_for_cycles, which is updated to use effective_id
                 is_acyclic, cycle_msg = check_for_cycles(graph_output)
 
                 if not is_acyclic:
@@ -703,11 +728,14 @@ class OpenAPICoreLogic:
 
         return state
 
+    # ... (keep other methods like describe_graph, get_graph_json, handle_unknown, handle_loop, answer_openapi_query as is,
+    #      but potentially add state.response = "..." at the beginning of each if you want intermediate messages for those too)
     def describe_graph(self, state: BotState) -> BotState:
         """Generates a natural language description of the current execution graph description using the LLM (if not already described)."""
         tool_name = "describe_graph"
         state.update_scratchpad_reason(tool_name, "Starting graph description.")
         logger.debug("Executing describe_graph node.")
+        state.response = "Describing the generated graph..." # Added intermediate message
 
         if not state.execution_graph:
             state.response = "Error: No execution graph description exists to describe. Try generating one first."
@@ -717,9 +745,13 @@ class OpenAPICoreLogic:
 
         # Use existing description if available and seems reasonable
         if state.execution_graph.description and len(state.execution_graph.description) > 20:
+             # Keep the intermediate message briefly before potentially overwriting with final desc
+             original_response = state.response
              state.response = state.execution_graph.description
              state.update_scratchpad_reason(tool_name, "Used existing graph description.")
              logger.info("Using existing graph description.")
+             # If you want *both* intermediate and final, append:
+             # state.response = original_response + "\nFinal Description: " + state.execution_graph.description
              return state
 
         # Generate description if missing or too short
@@ -727,7 +759,7 @@ class OpenAPICoreLogic:
         prompt = f"""
         Based on the following API execution graph description (JSON format), provide a concise, natural language description of the workflow it represents.
         Focus on the sequence of described actions and potential data flow implied by the nodes, edges, and input mappings descriptions.
-        Emphasize that this is a *plan* or *description* of a workflow, not an executed result.
+        Emphasize that this is a *plan* or *description* of a workflow, not an executed result. Use the node `display_name` if available, otherwise the `operationId`, to refer to steps.
 
         Execution Graph Description JSON:
         ```json
@@ -741,7 +773,7 @@ class OpenAPICoreLogic:
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             description = llm_response.strip()
-            state.response = description
+            state.response = description # Set the generated description as the final response
             state.execution_graph.description = description # Store the generated description
             state.update_scratchpad_reason(tool_name, f"LLM generated graph description (length {len(description)}).")
             logger.info(f"Generated graph description: {description}")
@@ -760,6 +792,8 @@ class OpenAPICoreLogic:
         tool_name = "get_graph_json"
         state.update_scratchpad_reason(tool_name, "Starting get graph JSON.")
         logger.debug("Executing get_graph_json node.")
+        state.response = "Formatting graph description as JSON..." # Added intermediate message
+
 
         if not state.execution_graph:
             state.response = "Error: No execution graph description exists to output. Try generating one first."
@@ -786,6 +820,8 @@ class OpenAPICoreLogic:
         tool_name = "handle_unknown"
         state.update_scratchpad_reason(tool_name, f"Handling unknown intent for input: {state.user_input}")
         logger.debug("Executing handle_unknown node.")
+        state.response = "Trying to understand your request..." # Added intermediate message
+
 
         prompt = f"""
         The user said: "{state.user_input}"
@@ -827,6 +863,8 @@ class OpenAPICoreLogic:
         tool_name = "handle_loop"
         state.update_scratchpad_reason(tool_name, f"Handling detected loop for previous intent: {state.previous_intent}")
         logger.debug("Executing handle_loop node.")
+        state.response = "It seems we might be in a loop..." # Added intermediate message
+
 
         prompt = f"""
         It seems we might be repeating the same step based on your last input: "{state.user_input}".
@@ -863,6 +901,8 @@ class OpenAPICoreLogic:
         tool_name = "answer_openapi_query"
         state.update_scratchpad_reason(tool_name, f"Starting to answer general query about spec/plan: {state.user_input}")
         logger.debug("Executing answer_openapi_query node (no execution).")
+        state.response = "Answering your question based on the loaded spec and generated artifacts..." # Added intermediate message
+
 
         query = state.user_input
         schema_loaded = state.openapi_schema is not None
@@ -904,11 +944,16 @@ class OpenAPICoreLogic:
              prompt_parts.append("\nExecution Graph Description Exists:")
              prompt_parts.append(f"- Description: {state.execution_graph.description or 'No overall description provided.'}")
              prompt_parts.append(f"- Nodes (Steps): {len(state.execution_graph.nodes)}")
+             # Use effective_id for logging/display
+             node_ids_list = [node.effective_id for node in state.execution_graph.nodes]
              prompt_parts.append(f"- Edges (Dependencies): {len(state.execution_graph.edges)}")
              # Include node list if short
-             if len(state.execution_graph.nodes) < 15: # Example limit
-                 node_list = ", ".join([node.operationId for node in state.execution_graph.nodes])
+             if len(node_ids_list) < 15: # Example limit
+                 node_list = ", ".join(node_ids_list)
                  prompt_parts.append(f"  Node Sequence (approx): {node_list}")
+             else:
+                 prompt_parts.append(f"  Node IDs: {', '.join(node_ids_list[:15])}...")
+
 
         if plan_exists:
              prompt_parts.append(f"\nExecution Plan Description Exists:")

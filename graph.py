@@ -1,31 +1,40 @@
 # filename: graph.py
 import logging
-# Removed requests and jsonpath_ng imports as execution is removed
 from typing import Any, Dict, List, Optional, Tuple
 from langgraph.graph import StateGraph, START, END
-# Removed jsonpath_parse import
-# Removed ValidationError import
-
-from models import BotState # We still need BotState
-from core_logic import OpenAPICoreLogic # We need the updated core_logic methods
-from router import OpenAPIRouter # We still need the router
-
-# Assuming MemorySaver is defined appropriately (e.g., in utils or directly)
-# from utils import MemorySaver
-# Using LangGraph's built-in memory saver for simplicity here
 from langgraph.checkpoint.memory import MemorySaver
 
-# Removed llm_call_helper and parse_llm_json_output as they are used inside core_logic
-# Removed extract_data_with_jsonpath
+# Import state model and core logic
+from models import BotState
+from core_logic import OpenAPICoreLogic
+from router import OpenAPIRouter
 
 logger = logging.getLogger(__name__)
 
-# Removed JSONPath Extraction Utility function
+# --- Responder Node Function ---
+def finalize_response(state: BotState) -> BotState:
+    """
+    Sets the final_response based on the last intermediate response from a node.
+    Clears the intermediate response field.
+    """
+    tool_name = "responder"
+    state.update_scratchpad_reason(tool_name, "Finalizing response for user.")
+    logger.debug("Executing responder node (finalize_response).")
 
-# Removed API Execution Utility function
+    if state.response:
+        state.final_response = state.response
+        logger.debug(f"Set final_response from state.response: '{state.response[:100]}...'")
+    elif not state.final_response: # Avoid overwriting if already set by error handling etc.
+        # Fallback if intermediate response is also missing
+        state.final_response = "I've completed the requested action, but there wasn't a specific message to display."
+        logger.warning("Responder: No intermediate 'response' found to set as 'final_response'. Using default.")
+        state.update_scratchpad_reason(tool_name, "Warning: No intermediate response found. Used default final response.")
 
-# Removed wrap_core_logic_method as it was for executor result handling
+    # Clear the intermediate response field for the next turn
+    state.response = None
+    return state
 
+# --- Graph Building ---
 def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     """
     Builds the LangGraph for the OpenAPI assistant without API execution.
@@ -34,13 +43,6 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     # Initialize the core logic and router instances
     core_logic = OpenAPICoreLogic(worker_llm=worker_llm)
     router_instance = OpenAPIRouter(router_llm=router_llm)
-
-    # Define the state keys that each node can update (excluding 'results' now)
-    # Note: LangGraph StateGraph automatically handles state updates,
-    # this definition is more for clarity/documentation in simpler graphs.
-    # In complex graphs with multiple writers, you might need StateGraph(channels=...)
-    # For this simplified graph, we'll rely on the node functions updating the BotState instance.
-    # The core_logic methods return a BotState instance, effectively being 'setters'.
 
     # Define the nodes using the methods from OpenAPICoreLogic and the router
     nodes = {
@@ -55,8 +57,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
         "answer_openapi_query": core_logic.answer_openapi_query, # Answers general questions
         "handle_unknown": core_logic.handle_unknown, # Handles unclear intent
         "handle_loop": core_logic.handle_loop, # Handles detected loops
-        # Removed "executor" node
-        "responder": lambda state: state # The responder node simply finalizes the state
+        "responder": finalize_response # Use the dedicated responder function
     }
 
     # Define the graph
@@ -72,105 +73,71 @@ def build_graph(router_llm: Any, worker_llm: Any) -> Any:
     # --- Define the graph flow (edges) ---
 
     # 1. From the router, route to different nodes based on intent
-    # The router returns the string name of the next node
-    def router_conditional_edge(state: BotState) -> str:
-        """
-        Conditional edge based on the router's output (the determined intent).
-        """
-        # The router node directly returns the next node name
-        # Check the state for the intent set by the router
-        # Note: The router node function should set state.intent *before* returning
-        # For simplicity, let's assume the router directly returns the node name string.
-        # If router.route returns a string, LangGraph automatically uses it for transition.
-        # If router.route returns a state object, you'd need to check state.intent here.
-        # Assuming router.route returns the node name string directly as in original.
-        intent = state.intent # Assuming router node sets state.intent before exiting
-
-        if intent in nodes:
-             return intent
-        else:
-             # This case should ideally be handled by router returning 'handle_unknown'
-             logger.warning(f"Router returned unknown intent '{intent}'. Defaulting to handle_unknown.")
-             return "handle_unknown"
-
-    # The router node returns the intent string, which serves as the next node name
-    # LangGraph automatically transitions based on the string returned by a node
-    # if it matches a node name or a defined edge.
-    # We can use add_edge for explicit transitions from router to known intents.
-    # Or, if the router *only* returns valid node names, we don't strictly need
-    # a conditional edge here, just edges for each possible output string.
-    # Let's use add_edge for clarity for the primary routes.
-    # If router can return *any* string, a conditional edge is safer.
-
-    # Let's assume the router node sets state.intent and we use a conditional edge based on that.
-    # The router node needs to return the state instance after setting state.intent.
-    # We updated the router to return BotState in a previous diff, let's stick to that pattern.
-
+    # The router node sets state.intent, which is used by the conditional edge.
     builder.add_conditional_edges(
-        "router", # From the router node
-        lambda state: state.intent, # Conditional function: route based on state.intent
-        {
+        "router", # Source node
+        lambda state: state.intent, # Function to determine the next node based on state.intent
+        { # Map intent strings to target node names
             "parse_openapi_spec": "parse_openapi_spec",
             "plan_execution": "plan_execution",
-            "identify_apis": "identify_apis", # Can still be routed to directly
-            "generate_payloads": "generate_payloads", # Can still be routed to directly
-            "generate_execution_graph": "generate_execution_graph", # Can still be routed to directly
+            "identify_apis": "identify_apis",
+            "generate_payloads": "generate_payloads",
+            "generate_execution_graph": "generate_execution_graph",
             "describe_graph": "describe_graph",
             "get_graph_json": "get_graph_json",
             "answer_openapi_query": "answer_openapi_query",
             "handle_unknown": "handle_unknown",
             "handle_loop": "handle_loop",
-            # Removed "executor" and intents related to execution
-            # Add a route for when the router doesn't recognize the intent
-            # This should be handled by router returning 'handle_unknown', but as a fallback:
-            # LangGraph's default behavior might handle this, but explicit can be clearer.
-            # If router returns a string not in this map, it will raise an error.
-            # It's safer if the router guarantees returning one of the valid node names or 'handle_unknown'.
+            # If router returns an intent not in this map, LangGraph will raise an error.
+            # The router logic should ensure it always returns a valid intent or 'handle_unknown'.
         }
     )
 
-    # 2. Define transitions between core logic nodes
+    # 2. Define transitions between core logic nodes (Happy Path Workflow)
+    # This defines a common sequence, but the router can jump to later steps if needed.
 
-    # After parsing, we might want to proactively plan or identify APIs
-    # Let's route parse_openapi_spec to plan_execution as a common follow-up
-    builder.add_edge("parse_openapi_spec", "plan_execution")
+    # After parsing, maybe identify APIs or plan execution next.
+    # Let's make identifying APIs the default follow-up to parsing.
+    # We also need to handle the case where parsing fails.
+    def check_parse_success(state: BotState) -> str:
+        """Routes after parsing based on success."""
+        if state.openapi_schema:
+            logger.debug("Routing from parse_openapi_spec: Success -> identify_apis")
+            return "identify_apis" # Proceed to identify APIs if schema parsed
+        else:
+            logger.debug("Routing from parse_openapi_spec: Failure -> responder")
+            return "responder" # Go to responder to output the error message
 
-    # After planning, the state.execution_plan is set.
-    # We could route to describe the plan, or identify APIs, or generate the graph.
-    # Let's route plan_execution to identify_apis as a common next step in the workflow
-    builder.add_edge("plan_execution", "identify_apis")
+    builder.add_conditional_edges("parse_openapi_spec", check_parse_success)
 
-    # After identifying APIs, generate payloads
+    # After identifying APIs, generate payload descriptions
+    # Consider adding a check if APIs were actually identified
     builder.add_edge("identify_apis", "generate_payloads")
 
-    # After generating payloads, generate the execution graph description
+    # After generating payload descriptions, generate the graph description
     builder.add_edge("generate_payloads", "generate_execution_graph")
 
-    # After generating the graph description, maybe describe it or just finish the turn.
-    # Let's route generate_execution_graph to describe_graph
+    # After generating the graph description, describe it
+    # Consider adding a check if graph was generated
     builder.add_edge("generate_execution_graph", "describe_graph")
 
-    # After describing the graph, route to the responder to output the description/summary
+    # After describing the graph, route to the responder
     builder.add_edge("describe_graph", "responder")
 
-    # Other nodes typically route directly to the responder after completing their task
+    # The plan_execution node is available via the router but not part of the default Parse->... flow.
+    # If plan_execution runs, let's route it to the responder to show the plan.
+    builder.add_edge("plan_execution", "responder")
+
+    # Other specific action nodes route directly to the responder after completing their task
     builder.add_edge("get_graph_json", "responder")
     builder.add_edge("answer_openapi_query", "responder")
     builder.add_edge("handle_unknown", "responder")
     builder.add_edge("handle_loop", "responder")
 
-    # Removed executor node and its conditional edges
-
     # 3. From the responder node, the graph ends.
     builder.add_edge("responder", END)
 
     # Compile the graph with memory
-    # Ensure MemorySaver is correctly imported or defined
-    # Assuming MemorySaver is available (e.g., imported from langgraph.checkpoint.memory)
     app = builder.compile(checkpointer=MemorySaver())
     logger.info("Graph compiled (without API execution capabilities).")
     return app
-
-# Removed executor_router function
-# Removed api_execution_node function
-# Removed wrap_core_logic_method

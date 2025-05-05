@@ -1,5 +1,3 @@
-# filename: main.py
-
 import logging
 import uuid
 import json
@@ -33,311 +31,164 @@ logger = logging.getLogger(__name__)
 # from dotenv import load_dotenv
 # load_dotenv() # Load environment variables from .env file
 
+# Placeholder LLM class - replace with your actual LLM setup
+class PlaceholderLLM:
+    def invoke(self, prompt: str):
+        logger.info(f"PlaceholderLLM invoked with prompt (first 100 chars): {prompt[:100]}...")
+        # Simple logic to simulate responses based on prompt keywords
+        prompt_lower = prompt.lower()
+        if "classify the user's intent" in prompt_lower:
+            if "openapi" in prompt_lower or "spec" in prompt_lower or "api documentation" in prompt_lower:
+                 # Simulate router detecting spec-related intent
+                 return '{"intent": "parse_openapi_spec"}'
+            elif "what apis" in prompt_lower or "endpoints" in prompt_lower:
+                 return '{"intent": "identify_apis"}'
+            elif "generate payload" in prompt_lower:
+                 return '{"intent": "generate_payloads"}'
+            elif "create graph" in prompt_lower or "workflow" in prompt_lower:
+                 return '{"intent": "generate_execution_graph"}'
+            elif "describe graph" in prompt_lower or "show graph" in prompt_lower:
+                 return '{"intent": "describe_graph"}'
+            elif "answer question" in prompt_lower or "tell me about" in prompt_lower:
+                 return '{"intent": "answer_openapi_query"}'
+            else:
+                 return '{"intent": "handle_unknown"}'
+        elif "extract the essential information" in prompt_lower or "summarize" in prompt_lower:
+            # Simulate parsing an OpenAPI spec - return a simple summary structure
+            # This needs to be a valid JSON string if parse_llm_json_output_with_model is used
+            # For parse_openapi_spec, the core_logic expects a string summary currently.
+            # Let's simulate a string summary
+            return "This is a simulated summary of the OpenAPI spec provided. It contains information about /users and /items endpoints."
+        elif "identify relevant apis" in prompt_lower:
+             return '{"api_list": ["get_users", "create_user"]}' # Example JSON response
+        elif "generate example payloads" in prompt_lower:
+             return '{"payloads": {"create_user": {"name": "test", "email": "test@example.com"}}}' # Example JSON
+        elif "generate a directed acyclic graph" in prompt_lower:
+            # Simulate a simple graph JSON structure
+            return '{"graph": {"nodes": [{"operationId": "start_node"}], "edges": []}}' # Example JSON
+        elif "describe the execution graph" in prompt_lower:
+             return "This is a simulated description of the execution graph."
+        else:
+            # Default fallback for other prompts
+            return "This is a simulated LLM response."
+
+
 def initialize_llms():
     """
     Initializes and returns the router and worker LLM instances.
-    Replace this with your actual LLM setup.
-    Ensure API keys are handled securely (e.g., environment variables).
+    Replace with your actual LLM setup (e.g., OpenAI, Google GenAI).
     """
-    logger.warning("Initializing LLMs - REPLACE PLACEHOLDER LOGIC.")
+    # --- REPLACE WITH YOUR ACTUAL LLM INSTANTIATION ---
+    # Example using OpenAI:
+    # from langchain_openai import ChatOpenAI
+    # api_key = os.getenv("OPENAI_API_KEY")
+    # if not api_key:
+    #     raise ValueError("OPENAI_API_KEY environment variable not set.")
+    # router_llm = ChatOpenAI(api_key=api_key, model="gpt-4o-mini", temperature=0)
+    # worker_llm = ChatOpenAI(api_key=api_key, model="gpt-4o", temperature=0.5)
 
-    # Example using environment variables for API keys
-    # openai_api_key = os.getenv("OPENAI_API_KEY")
-    # google_api_key = os.getenv("GOOGLE_API_KEY")
-    # if not openai_api_key:
-    #     logger.error("OPENAI_API_KEY environment variable not set.")
-    #     # Handle error appropriately - exit or raise exception
-    # if not google_api_key:
-    #     logger.error("GOOGLE_API_KEY environment variable not set.")
-    #     # Handle error appropriately
+    # Using PlaceholderLLM for demonstration if no actual LLM is configured
+    logger.warning("Using PlaceholderLLM. Replace with actual LLM implementation for production.")
+    router_llm = PlaceholderLLM()
+    worker_llm = PlaceholderLLM()
+    # ---------------------------------------------------
 
-    try:
-        # Replace with your actual LLM instantiation
-        # Example:
-        # from langchain_openai import ChatOpenAI
-        # router_llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, api_key=openai_api_key)
-        # worker_llm = ChatOpenAI(model="gpt-4", temperature=0.1, api_key=openai_api_key)
-        # or
-        # from langchain_google_genai import ChatGoogleGenerativeAI
-        # worker_llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.1, google_api_key=google_api_key)
-
-        # Using PlaceholderLLM for now to allow code execution without real keys
-        # REMOVE THIS IN YOUR ACTUAL IMPLEMENTATION
-        class PlaceholderLLM:
-            def __init__(self, name="PlaceholderLLM"): self.name = name
-            def invoke(self, prompt: Any, **kwargs) -> Any:
-                logger.warning(f"Using {self.name}. Needs replacement.")
-                # This placeholder needs to simulate the *raw string output* of the LLM
-                # that the core_logic nodes then parse and use to update state.
-                # The simulation here is simplified; a real LLM would return a string.
-                prompt_str = str(prompt)
-
-                # Simulate router response (simple string intent)
-                if "Determine the most appropriate next action" in prompt_str:
-                    # Simple check to simulate routing spec input vs question
-                    if any(sig in prompt_str for sig in ['"openapi":', 'swagger:', '{', '-']): # Check for spec signatures in prompt
-                         # Simulate router returning the next node name
-                         return "parse_openapi_spec"
-                    elif "list apis" in prompt_str.lower() or "endpoints" in prompt_str.lower():
-                         # Simulate router returning the next node name
-                         return "answer_openapi_query"
-                    else:
-                         # Simulate router returning the next node name
-                         return "handle_unknown"
-
-                # Simulate core_logic node LLM responses
-                # These should simulate the *raw string output* the LLM would produce,
-                # which core_logic nodes are designed to parse.
-                # The core_logic nodes will *then* create the state update dictionary
-                # including 'response' and '__next__'.
-                if "Parse the following OpenAPI specification" in prompt_str:
-                    # Simulate LLM returning JSON for parsing
-                    simulated_schema_json = """
-                    {
-                      "openapi": "3.0.0",
-                      "info": {
-                        "title": "Simulated API",
-                        "version": "1.0"
-                      },
-                      "paths": {
-                        "/simulated": {
-                          "get": {
-                            "operationId": "getSimulated",
-                            "summary": "Get simulated data"
-                          }
-                        }
-                      }
-                    }
-                    """
-                    return simulated_schema_json # Core logic will parse this and set state['response']
-
-                if "identify the key API endpoints" in prompt_str:
-                     # Simulate LLM returning JSON list of APIs
-                     simulated_api_list_json = """
-                     [
-                       {"operationId": "getSimulated", "summary": "Get simulated data", "method": "get", "path": "/simulated"}
-                     ]
-                     """
-                     return simulated_api_list_json # Core logic will parse this and set state['response']
-
-                if "describe example request payloads" in prompt_str:
-                     # Simulate LLM returning JSON object of payload descriptions
-                     simulated_payloads_json = """
-                     {
-                       "getSimulated": "A description of the simulated payload."
-                     }
-                     """
-                     return simulated_payloads_json # Core logic will parse this and set state['response']
-
-                if "Generate a description of an API execution workflow graph" in prompt_str:
-                     # Simulate LLM returning JSON for the graph description
-                     simulated_graph_json = """
-                     {
-                       "nodes": [
-                         {"operationId": "getSimulated", "display_name": "getSimulated_instance", "payload_description": "Simulated payload.", "input_mappings": []}
-                       ],
-                       "edges": [],
-                       "description": "A simulated workflow description."
-                     }
-                     """
-                     return simulated_graph_json # Core logic will parse this and set state['response']
-
-                if "provide a concise, natural language description of the workflow" in prompt_str:
-                     # Simulate LLM returning a string description
-                     return "This is a simulated workflow description." # Core logic will set state['response']
-
-                if "Answer the user's question" in prompt_str and ("list apis" in prompt_str or "endpoints" in prompt_str):
-                    # Simulate LLM returning a string answer
-                    return "Simulating: Based on the loaded spec, the following APIs are available: getSimulated." # Core logic will set state['response']
+    logger.info("LLMs initialized.")
+    return {"router_llm": router_llm, "worker_llm": worker_llm}
 
 
-                # Default fallback raw string response
-                return "Simulating: Completed a step."
-
-
-            # For async streaming, ainvoke is necessary.
-            async def ainvoke(self, prompt: Any, **kwargs) -> Any:
-                 # Simulate async behavior for astream
-                 import asyncio
-                 await asyncio.sleep(0.1) # Small delay to simulate async work
-                 # In a real scenario, you'd call your sync invoke or an async LLM client method
-                 # For this placeholder, just return the sync invoke result
-                 return self.invoke(prompt, **kwargs)
-
-
-        router_llm = PlaceholderLLM("RouterLLM")
-        worker_llm = PlaceholderLLM("WorkerLLM")
-        # --- END OF PLACEHOLDER ---
-
-        # Validate that the LLMs have the required methods for the graph (invoke/ainvoke)
-        if not hasattr(router_llm, 'invoke') or not hasattr(worker_llm, 'invoke'):
-            raise TypeError("Initialized LLMs must have an 'invoke' method.")
-        # If using astream, they must also have ainvoke
-        if not hasattr(router_llm, 'ainvoke') or not hasattr(worker_llm, 'ainvoke'):
-             logger.warning("LLMs do not have 'ainvoke' method. Async streaming may not work as expected.")
-
-
-        logger.info("LLM clients initialized (using placeholders - replace!).")
-        return router_llm, worker_llm
-
-# --- FastAPI App Initialization ---
+# --- FastAPI App Setup ---
 app = FastAPI()
 
-# --- Serve a simple HTML page (Optional, for testing the WebSocket) ---
-# You might need to install jinja2: pip install jinja2
-# Create a 'templates' directory and an 'index.html' file inside it.
-# Example index.html:
-# <!DOCTYPE html>
-# <html>
-# <head><title>OpenAPI Analyzer</title></head>
-# <body>
-#     <h1>OpenAPI Analyzer</h1>
-#     <input type="text" id="messageInput" autocomplete="off"/>
-#     <button onclick="sendMessage()">Send</button>
-#     <div id="messages"></div>
-#     <script>
-#         var ws = new WebSocket("ws://localhost:8000/ws/submit_openapi");
-#         ws.onmessage = function(event) {
-#             var messages = document.getElementById('messages');
-#             var message = document.createElement('p');
-#             var data = JSON.parse(event.data);
-#             message.textContent = data.type + ": " + data.content;
-#             messages.appendChild(message);
-#         };
-#         function sendMessage() {
-#             var input = document.getElementById("messageInput");
-#             ws.send(input.value);
-#             input.value = '';
-#         }
-#     </script>
-# </body>
-# </html>
-#
-# templates = Jinja2Templates(directory="templates")
-# @app.get("/", response_class=HTMLResponse)
-# async def get(request: Request):
-#     return templates.TemplateResponse("index.html", {"request": request})
-# --- End Optional HTML Section ---
+# Serve a simple HTML page for testing the WebSocket connection
+# Ensure you have a 'templates' directory with 'index.html'
+templates = Jinja2Templates(directory="templates")
 
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    """Serve the HTML page for WebSocket testing."""
+    return templates.TemplateResponse("index.html", {"request": request})
 
-# --- Global LangGraph Instance ---
-# Initialize LLMs and build the graph once on startup
-router_llm_instance: Any = None
-worker_llm_instance: Any = None
-langgraph_app: Any = None
-checkpointer = MemorySaver() # Use MemorySaver for in-memory state persistence per session
-
-@app.on_event("startup")
-async def startup_event():
-    """Initializes LLMs and builds the LangGraph application on FastAPI startup."""
-    global router_llm_instance, worker_llm_instance, langgraph_app
-    logger.info("FastAPI startup event: Initializing LLMs and building graph...")
-    try:
-        router_llm_instance, worker_llm_instance = initialize_llms()
-        # Pass the checkpointer to build_graph if your build_graph function accepts it
-        # (The provided graph.py does not accept checkpointer in build_graph,
-        # it's passed when running the app instance)
-        langgraph_app = build_graph(router_llm=router_llm_instance, worker_llm=worker_llm_instance)
-        logger.info("LangGraph application built successfully.")
-    except Exception as e:
-        logger.critical(f"Failed to initialize LLMs or build graph on startup: {e}", exc_info=True)
-        # Depending on your needs, you might want to raise the exception
-        # or set a flag to indicate the service is not fully operational.
-        # For this example, we'll just log and continue, but requests might fail.
-        langgraph_app = None # Ensure app is None if build fails
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleans up resources on FastAPI shutdown (if needed)."""
-    logger.info("FastAPI shutdown event.")
-    # Add any cleanup logic here (e.g., closing database connections if using SQL checkpointer)
-
-
-# --- WebSocket Endpoint ---
+# Define the WebSocket endpoint
 @app.websocket("/ws/submit_openapi")
-async def websocket_endpoint(websocket: WebSocket):
-    """Handles WebSocket connections for OpenAPI analysis."""
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """Handles WebSocket connections for a specific session."""
     await websocket.accept()
-    logger.info(f"WebSocket accepted connection from {websocket.client.host}:{websocket.client.port}")
+    logger.info(f"WebSocket accepted connection from session: {session_id}")
+    await handle_websocket_session(websocket, session_id)
 
-    # Generate a unique session ID for this WebSocket connection
-    # This will be used as the thread_id for LangGraph's checkpointer
-    session_id = str(uuid.uuid4())
-    logger.info(f"Assigned session ID: {session_id}")
+async def handle_websocket_session(websocket: WebSocket, session_id: str):
+    logger.info(f"WebSocket session started: {session_id}")
 
-    # Provide initial welcome message
-    await websocket.send_json({"type": "info", "content": f"Connected. Session ID: {session_id}. Please provide an OpenAPI spec (JSON/YAML) or ask a question."})
+    # Initialize or load state for this session
+    checkpointer = MemorySaver() # Or your persistent checkpointer
+    checkpoint = checkpointer.get_state(session_id)
+    if checkpoint:
+        logger.info(f"Loaded existing state for session {session_id}")
+        initial_state = BotState(**checkpoint.state)
+    else:
+        logger.info(f"Initializing new state for session {session_id}")
+        initial_state = BotState()
 
-    if langgraph_app is None:
-         error_msg = "Backend initialization failed. Cannot process requests."
-         logger.error(error_msg)
-         await websocket.send_json({"type": "error", "content": error_msg})
-         await websocket.close(code=1011) # Internal Error
-         return # Exit the handler if app failed to build
+    # Build the graph (ensure LLMs are initialized)
+    # Assuming initialize_llms is defined or imported
+    llms = initialize_llms()
+    router_llm = llms["router_llm"]
+    worker_llm = llms["worker_llm"]
+    app = build_graph(router_llm, worker_llm, checkpointer)
 
     try:
         while True:
-            # Receive message from client
-            data = await websocket.receive_text()
-            user_input = data.strip()
-
-            if not user_input:
-                logger.warning("Received empty message from client.")
-                await websocket.send_json({"type": "warning", "content": "Received empty message. Please provide input."})
-                continue
-
-            logger.info(f"Received message for session {session_id}: '{user_input[:100]}...'")
-            await websocket.send_json({"type": "info", "content": "Processing your request..."}) # Acknowledge receipt
-
-            # Prepare input for LangGraph
-            config = {"configurable": {"thread_id": session_id}}
-            current_input = {"user_input": user_input, "session_id": session_id} # Pass session_id in input as well if needed by nodes
-
-            # Stream state updates from the LangGraph execution
-            final_state_snapshot = None
             try:
-                # Use astream for asynchronous streaming in FastAPI
-                # stream_mode="values" yields the full state dictionary after each node
-                async for intermediate_state_dict in langgraph_app.astream(current_input, config=config, stream_mode="values"):
-                     # Process each state update yielded by the stream
-                     # intermediate_state_dict is the dictionary representation of the state
-                     if isinstance(intermediate_state_dict, dict):
-                         # Check for intermediate response messages set by nodes
-                         response_message = intermediate_state_dict.get("response")
-                         if response_message:
-                             # Send intermediate message to the client
-                             logger.debug(f"Sending intermediate message for session {session_id}: {response_message[:100]}...")
-                             await websocket.send_json({"type": "intermediate", "content": response_message})
+                # --- ADDED LOG ---
+                logger.info(f"Waiting for message on session {session_id}...")
+                input_data = await websocket.receive_json()
+                # --- ADDED LOG ---
+                logger.info(f"Received message on session {session_id}: {input_data}")
 
-                         # Keep track of the latest state snapshot dictionary
-                         final_state_snapshot = intermediate_state_dict
+                # Prepare the state for the graph invocation
+                state_config: Dict[str, Any] = {"current_step_input": input_data.get("query", "")}
 
-                # After the stream finishes, process the final state snapshot dictionary
-                if final_state_snapshot and isinstance(final_state_snapshot, dict):
-                     # The responder node should have put the final user-facing message here
-                     final_response = final_state_snapshot.get("final_response")
-
-                     # Send the final response message
-                     if final_response:
-                         logger.info(f"Sending final response for session {session_id}: {final_response[:100]}...")
-                         await websocket.send_json({"type": "final", "content": final_response})
-                     else:
-                         # Fallback if final_response isn't set (e.g., error before responder)
-                         logger.warning(f"Graph execution finished for session {session_id}, but 'final_response' was empty.")
-                         await websocket.send_json({"type": "warning", "content": "Processing finished, but no specific final result message was generated."})
-
-                     # You could optionally send other final state info here if needed
-                     # e.g., final_graph_dict = final_state_snapshot.get("execution_graph")
-                     # if final_graph_dict: await websocket.send_json({"type": "graph", "content": final_graph_dict}) # Note: This would send the dictionary, client needs to handle
-
-                else:
-                     logger.error(f"Graph execution finished for session {session_id} without a valid final state dictionary.")
-                     await websocket.send_json({"type": "error", "content": "Internal error: Failed to get final processing state."})
+                # Check if input is an OpenAPI spec
+                input_is_spec = False
+                if "spec" in input_data and isinstance(input_data["spec"], str):
+                    state_config["openapi_spec_string"] = input_data["spec"]
+                    input_is_spec = True
+                    logger.info(f"Detected OpenAPI spec in input for session {session_id}.")
+                elif "spec" in input_data and input_data["spec"] is not None:
+                     # Handle cases where 'spec' might be sent but not a string (e.g., null)
+                     logger.warning(f"Received 'spec' in input for session {session_id} but it's not a string. Ignoring spec.")
 
 
+                # Add other relevant input to state_config if needed
+                # For example, you might want to add 'input_is_spec' itself to state
+                state_config["input_is_spec"] = input_is_spec # <-- Add this to state_config
+
+                # --- ADDED LOG ---
+                logger.info(f"Invoking graph for session {session_id} with state_config: {state_config}")
+                # Invoke the graph with the current state and input
+                async for event in app.astream(state_config, config={"configurable": {"thread_id": session_id}}):
+                    for key, value in event.items():
+                        if key != "__end__":
+                            # --- ADDED LOG INSIDE THE LOOP ---
+                            logger.info(f"Received event from graph for session {session_id} - Node: {key}")
+                            # Process graph output (e.g., send to user)
+                            if key == "responder" and value and value.get('final_response'):
+                                final_response = value.get('final_response')
+                                logger.info(f"Sending final response for session {session_id}: {final_response[:100]}...")
+                                await websocket.send_json({"type": "final_response", "content": final_response})
+                            # You might want to send other intermediate updates too
+                            # else:
+                            #     logger.debug(f"Ignoring intermediate event from node {key}")
+
+                logger.info(f"Graph execution completed for session {session_id}")
+
+            except json.JSONDecodeError:
+                logger.error(f"Invalid JSON received on session {session_id}")
+                await websocket.send_json({"type": "error", "content": "Invalid JSON format received."})
             except Exception as e:
-                # Catch exceptions during graph execution
-                logger.critical(f"Error during LangGraph execution for session {session_id}: {e}", exc_info=True)
+                 # --- ADDED LOG ---
+                logger.critical(f"Error during graph processing for session {session_id}: {e}", exc_info=True)
                 await websocket.send_json({"type": "error", "content": f"An error occurred during processing: {e}"})
                 # Decide if you want to close the connection on error or continue
                 # await websocket.close(code=1011) # Example: Close on internal error
@@ -347,6 +198,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
         # Catch any other exceptions in the WebSocket loop itself
+         # --- ADDED LOG ---
         logger.critical(f"Unexpected error in WebSocket loop for session {session_id}: {e}", exc_info=True)
         try:
             await websocket.send_json({"type": "error", "content": f"An unexpected error occurred: {e}"})

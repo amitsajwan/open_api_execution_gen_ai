@@ -33,6 +33,7 @@ class OpenAPIRouter:
         "answer_openapi_query", # User asks a general question about spec/plan
         "handle_unknown", # Intent could not be determined
         "handle_loop", # Detected potential loop in routing
+        "responder", # Router might route directly to responder
     ]
 
     # Regex to quickly check if input looks like JSON or YAML spec start

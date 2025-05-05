@@ -212,7 +212,7 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Use parse_llm_json_output without model for initial schema parsing
+            # Use parse_llm_json_output_with_model without model for initial schema parsing
             parsed_schema = parse_llm_json_output_with_model(llm_response) # Basic JSON parsing
 
             if parsed_schema and isinstance(parsed_schema, dict):
@@ -293,7 +293,7 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Use parse_llm_json_output without model for list of strings
+            # Use parse_llm_json_output_with_model without model for list of strings
             steps = parse_llm_json_output_with_model(llm_response)
 
             # Basic validation: ensure steps is a list of strings
@@ -380,7 +380,7 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Use parse_llm_json_output without model for list of dicts
+            # Use parse_llm_json_output_with_model without model for list of dicts
             identified_apis = parse_llm_json_output_with_model(llm_response) # Expecting a list
 
             if identified_apis and isinstance(identified_apis, list):
@@ -419,11 +419,11 @@ class OpenAPICoreLogic:
 
     def generate_payloads(self, state: BotState) -> BotState:
         """
-        Generates example payload descriptions for identified API operations using the LLM.
+        Generates example payload descriptions (as strings) for identified API operations using the LLM.
         Considers user instructions if provided via state.payload_generation_instructions
-        or state.extracted_params. Updates state.payload_descriptions and state.response.
-        These are NOT actual payloads for execution, just descriptions/examples.
-        """
+        or state.extracted_params. Updates state.payload_descriptions (Dict[str, str]) and state.response.
+        These are NOT actual payloads for execution, just string descriptions.
+        """ # <-- UPDATED DOCSTRING
         tool_name = "generate_payloads"
         state.update_scratchpad_reason(tool_name, "Starting payload generation (description only).")
         logger.debug("Executing generate_payloads node (description only).")
@@ -480,7 +480,8 @@ class OpenAPICoreLogic:
 
         schema_summary = state.schema_summary
         api_list_str = json.dumps(apis_to_process, indent=2)
-        # Use the renamed state field
+        # Referencing renamed state field payload_descriptions
+        # This field now stores Dict[str, str]
         payloads_desc_str = json.dumps(state.payload_descriptions or "No payload descriptions generated yet", indent=2)
 
         prompt = f"""
@@ -506,19 +507,20 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            # Use parse_llm_json_output without model for dict
+            # Use parse_llm_json_output_with_model without model for dict
             described_payloads = parse_llm_json_output_with_model(llm_response) # Expecting a dict
 
-            if described_payloads and isinstance(described_payloads, dict):
+            # Validate that the values in the dictionary are strings as per the updated model
+            if described_payloads and isinstance(described_payloads, dict) and all(isinstance(v, str) for v in described_payloads.values()):
                 # Store the descriptions in the renamed state field
                 state.payload_descriptions = described_payloads
                 state.response = f"Generated descriptions for example payloads for {len(described_payloads)} API operations."
                 state.update_scratchpad_reason(tool_name, f"LLM generated payload descriptions for keys: {list(described_payloads.keys())}")
                 logger.info(f"Generated Payload Descriptions: {described_payloads}")
             else:
-                state.response = "Error: LLM did not return a valid JSON object mapping operationIds to payload descriptions."
+                state.response = "Error: LLM did not return a valid JSON object mapping operationIds to payload descriptions (values should be strings)." # <-- UPDATED ERROR MESSAGE
                 state.update_scratchpad_reason(tool_name, f"LLM payload description failed. Raw response: {llm_response[:500]}...")
-                logger.error(f"LLM failed to generate payload descriptions in valid JSON object format. Response: {llm_response[:500]}")
+                logger.error(f"LLM failed to generate payload descriptions in valid JSON object format (values not strings). Response: {llm_response[:500]}")
                 state.payload_descriptions = None # Clear on failure
 
         except Exception as e:
@@ -594,6 +596,7 @@ class OpenAPICoreLogic:
         # Use identified APIs if available, otherwise indicate all APIs are considered
         api_list_str = json.dumps(state.identified_apis, indent=2) if state.identified_apis else '"All APIs in schema summary"'
         # Referencing renamed state field payload_descriptions
+        # This field now stores Dict[str, str]
         payloads_desc_str = json.dumps(state.payload_descriptions or "No payload descriptions generated yet", indent=2)
 
 
@@ -611,7 +614,7 @@ class OpenAPICoreLogic:
             ```json
             {api_list_str}
             ```
-        4. Described Example Payloads:
+        4. Described Example Payloads (operationId to string description mapping):
             ```json
             {payloads_desc_str}
             ```
@@ -620,7 +623,7 @@ class OpenAPICoreLogic:
         1. Analyze the relationships and potential dependencies between the API operations based on the schema, common workflow patterns (like CRUD), and the user's goal/instructions.
         2. Determine a logical sequence of API calls to achieve the goal. Think step-by-step about data flow (e.g., needing an ID from a 'create' response description for a subsequent 'get' or 'update' call description).
         3. Represent this workflow description as a DAG (no circular dependencies). Emphasize creating a valid DAG. If a potential cycle exists (e.g., repeatedly checking status), represent it logically as a sequence in the description or note the pattern in the graph description text, but DO NOT create a circular graph structure in the JSON output.
-        4. Nodes: Each node should correspond to an API operation. Include its 'operationId', 'summary', and optionally the 'payload_description' if available and relevant.
+        4. Nodes: Each node should correspond to an API operation. Include its 'operationId', 'summary', and optionally the 'payload_description' *string* if available and relevant from the "Described Example Payloads" context above.
            **IMPORTANT:** If an API operation is called multiple times in the workflow description, generate a unique `display_name` for each instance (e.g., "getUserDetails_afterCreate", "getUserDetails_afterUpdate") in addition to the `operationId`. Use the `display_name` as the unique identifier for the node in edges and input mappings if provided, otherwise use the `operationId`.
            For each node that would require input parameters derived from previous described steps, include an `input_mappings` list. Each item in this list should be an object with:
            - `source_operation_id`: The `operationId` OR `display_name` of the previous node whose described result *would* contain the required data. Use the unique identifier of the source node instance.
@@ -633,7 +636,7 @@ class OpenAPICoreLogic:
         6. Provide a brief natural language `description` of the overall workflow described by the graph.
 
         Output Format:
-        Output ONLY a single JSON object matching the GraphOutput structure (including `nodes`, `edges`, `description`). The content should be descriptions, not instructions for live execution. Ensure nodes use the `payload_description` field. Use the `display_name` field in nodes if multiple instances of the same operation are used. Reference nodes in edges and mappings using their `display_name` if provided, otherwise their `operationId`.
+        Output ONLY a single JSON object matching the GraphOutput structure (including `nodes`, `edges`, `description`). The content should be descriptions, not instructions for live execution. Ensure nodes use the `payload_description` field and it contains a *string*. Use the `display_name` field in nodes if multiple instances of the same operation are used. Reference nodes in edges and mappings using their `display_name` if provided, otherwise their `operationId`.
         ```json
         {{
           "nodes": [
@@ -641,7 +644,7 @@ class OpenAPICoreLogic:
               "operationId": "...",
               "display_name": "...", // Include if operationId is repeated
               "summary": "...",
-              "payload_description": "...", // This should be the string description
+              "payload_description": "...", // <-- THIS SHOULD BE A STRING
               "input_mappings": [
                 {{
                   "source_operation_id": "...", // operationId or display_name of source node
@@ -674,23 +677,49 @@ class OpenAPICoreLogic:
 
             if graph_output and isinstance(graph_output, GraphOutput):
                 # Validate graph structure and check for cycles using effective_id
-                node_ids = {node.effective_id for node in graph_output.nodes} # Use effective_id
+                node_ids = {node.effective_id for node in graph_output.nodes if isinstance(node, Node)} # Use effective_id
                 valid_graph_structure = True
                 error_details = []
 
                 # Validate edges using effective_id
-                for edge in graph_output.edges:
-                     if edge.from_node not in node_ids or edge.to_node not in node_ids:
-                          error_details.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
-                          valid_graph_structure = False
+                if not isinstance(graph_output.edges, list):
+                    error_details.append("Graph edges attribute is not a list.")
+                    valid_graph_structure = False
+                else:
+                    for edge in graph_output.edges:
+                         if isinstance(edge, Edge) and hasattr(edge, 'from_node') and hasattr(edge, 'to_node'):
+                              if edge.from_node not in node_ids or edge.to_node not in node_ids:
+                                   error_details.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
+                                   valid_graph_structure = False
+                         else:
+                              error_details.append(f"Invalid edge object found: {edge}")
+                              valid_graph_structure = False
+
 
                 # Validate mappings (basic checks) using effective_id
-                for node in graph_output.nodes:
-                    for mapping in node.input_mappings:
-                        if mapping.source_operation_id not in node_ids: # Check against effective_ids
-                             error_details.append(f"Mapping in node '{node.effective_id}' references non-existent source node: '{mapping.source_operation_id}'")
-                             valid_graph_structure = False
-                        # More detailed validation could check target_parameter_name/in against schema here
+                if not isinstance(graph_output.nodes, list):
+                    error_details.append("Graph nodes attribute is not a list.")
+                    valid_graph_structure = False
+                else:
+                    for node in graph_output.nodes:
+                        if isinstance(node, Node):
+                            if not isinstance(node.input_mappings, list):
+                                error_details.append(f"Node '{node.effective_id}' input_mappings is not a list.")
+                                valid_graph_structure = False
+                            else:
+                                for mapping in node.input_mappings:
+                                    if isinstance(mapping, InputMapping):
+                                        if mapping.source_operation_id not in node_ids: # Check against effective_ids
+                                             error_details.append(f"Mapping in node '{node.effective_id}' references non-existent source node: '{mapping.source_operation_id}'")
+                                             valid_graph_structure = False
+                                        # More detailed validation could check target_parameter_name/in against schema here
+                                    else:
+                                        error_details.append(f"Invalid input mapping object found in node '{node.effective_id}': {mapping}")
+                                        valid_graph_structure = False
+                        else:
+                            error_details.append(f"Invalid node object found: {node}")
+                            valid_graph_structure = False
+
 
                 # Pass GraphOutput directly to check_for_cycles, which is updated to use effective_id
                 is_acyclic, cycle_msg = check_for_cycles(graph_output)
@@ -728,8 +757,7 @@ class OpenAPICoreLogic:
 
         return state
 
-    # ... (keep other methods like describe_graph, get_graph_json, handle_unknown, handle_loop, answer_openapi_query as is,
-    #      but potentially add state.response = "..." at the beginning of each if you want intermediate messages for those too)
+    # ... (rest of core_logic.py methods remain the same)
     def describe_graph(self, state: BotState) -> BotState:
         """Generates a natural language description of the current execution graph description using the LLM (if not already described)."""
         tool_name = "describe_graph"
@@ -965,6 +993,7 @@ class OpenAPICoreLogic:
         if payloads_described:
              prompt_parts.append(f"\nExample Payload Descriptions Generated for {len(state.payload_descriptions)} operations.")
              # Include keys and brief values of generated payload descriptions
+             # state.payload_descriptions is Dict[str, str] now
              payload_desc_previews = [f"- {op_id}: {desc[:60]}..." for op_id, desc in list(state.payload_descriptions.items())[:10]] # Limit list size and description preview
              prompt_parts.append("  Example Descriptions:")
              prompt_parts.append("\n".join(payload_desc_previews))

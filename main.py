@@ -127,7 +127,9 @@ def initialize_llms():
                  # Simulate async behavior for astream
                  import asyncio
                  await asyncio.sleep(0.1) # Small delay to simulate async work
-                 return self.invoke(prompt, **kwargs) # Call sync invoke logic
+                 # In a real scenario, you'd call your sync invoke or an async LLM client method
+                 # For this placeholder, just return the sync invoke result
+                 return self.invoke(prompt, **kwargs)
 
 
         router_llm = PlaceholderLLM("RouterLLM")
@@ -200,7 +202,8 @@ async def startup_event():
     try:
         router_llm_instance, worker_llm_instance = initialize_llms()
         # Pass the checkpointer to build_graph if your build_graph function accepts it
-        # (The provided graph.py does accept checkpointer)
+        # (The provided graph.py does not accept checkpointer in build_graph,
+        # it's passed when running the app instance)
         langgraph_app = build_graph(router_llm=router_llm_instance, worker_llm=worker_llm_instance)
         logger.info("LangGraph application built successfully.")
     except Exception as e:
@@ -261,22 +264,24 @@ async def websocket_endpoint(websocket: WebSocket):
             final_state_snapshot = None
             try:
                 # Use astream for asynchronous streaming in FastAPI
-                async for intermediate_state in langgraph_app.astream(current_input, config=config, stream_mode="values"):
+                # stream_mode="values" yields the full state dictionary after each node
+                async for intermediate_state_dict in langgraph_app.astream(current_input, config=config, stream_mode="values"):
                      # Process each state update yielded by the stream
-                     if isinstance(intermediate_state, dict):
+                     # intermediate_state_dict is the dictionary representation of the state
+                     if isinstance(intermediate_state_dict, dict):
                          # Check for intermediate response messages set by nodes
-                         response_message = intermediate_state.get("response")
+                         response_message = intermediate_state_dict.get("response")
                          if response_message:
                              # Send intermediate message to the client
                              logger.debug(f"Sending intermediate message for session {session_id}: {response_message[:100]}...")
                              await websocket.send_json({"type": "intermediate", "content": response_message})
 
-                         # Keep track of the latest state snapshot
-                         final_state_snapshot = intermediate_state
+                         # Keep track of the latest state snapshot dictionary
+                         final_state_snapshot = intermediate_state_dict
 
-                # After the stream finishes, process the final state snapshot
+                # After the stream finishes, process the final state snapshot dictionary
                 if final_state_snapshot and isinstance(final_state_snapshot, dict):
-                     # The responder node should have set the final user-facing message
+                     # The responder node should have put the final user-facing message here
                      final_response = final_state_snapshot.get("final_response")
 
                      # Send the final response message
@@ -289,8 +294,8 @@ async def websocket_endpoint(websocket: WebSocket):
                          await websocket.send_json({"type": "warning", "content": "Processing finished, but no specific final result message was generated."})
 
                      # You could optionally send other final state info here if needed
-                     # e.g., final_graph = final_state_snapshot.get("execution_graph")
-                     # if final_graph: await websocket.send_json({"type": "graph", "content": final_graph.model_dump_json()})
+                     # e.g., final_graph_dict = final_state_snapshot.get("execution_graph")
+                     # if final_graph_dict: await websocket.send_json({"type": "graph", "content": final_graph_dict}) # Note: This would send the dictionary, client needs to handle
 
                 else:
                      logger.error(f"Graph execution finished for session {session_id} without a valid final state dictionary.")

@@ -41,8 +41,8 @@ def finalize_response(state: BotState) -> Dict[str, Any]: # Return type hint is 
     state.update_scratchpad_reason(tool_name, "Final response set.")
 
     # The responder is typically the end of a chain, so it implicitly transitions to END
-    # We don't need a __next__ key here because there are no conditional edges *from* responder
-    # If you had edges *from* responder, you would add updates['__next__'] = next_node_name
+    # It should not return a '__next__' key unless it's routing elsewhere.
+    # For this graph, it's the end, so no '__next__' is needed in the return dictionary.
 
     return updates # <-- Return the updates dictionary
 
@@ -86,10 +86,10 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
     builder.set_entry_point("router")
 
     # 2. Add edges
-    # Conditional edge from the router based on its return value (__next__ key)
+    # Conditional edge from the router based on its return value (__next__ key in state)
     builder.add_conditional_edges(
         "router",  # Source node
-        lambda state: state.get("__next__"), # <-- Condition function: extract __next__ from state updates
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
         { # Mapping from __next__ value to next node name
             "parse_openapi_spec": "parse_openapi_spec",
             "plan_execution": "plan_execution",
@@ -101,21 +101,16 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
             "answer_openapi_query": "answer_openapi_query",
             "handle_unknown": "handle_unknown",
             "handle_loop": "handle_loop",
+            "responder": "responder", # Router might sometimes route directly to responder (e.g., empty input handled by router)
             # Add other potential router outputs here if any
         }
     )
 
     # Default flow after parsing: identify -> payloads -> graph -> describe -> responder
-    # Add conditional edge after parse_openapi_spec to check for success
-    # (Assuming parse_openapi_spec returns updates['__next__'] = 'identify_apis' on success
-    # or updates['__next__'] = 'responder' or 'handle_unknown' on failure)
-    # Let's update parse_openapi_spec to return updates['__next__'] = 'identify_apis' on success
-    # and updates['__next__'] = 'responder' on failure (with error message in state.response)
-    # This requires modifying core_logic.parse_openapi_spec to return a dictionary with __next__
-    # For now, assuming parse_openapi_spec returns updates with '__next__'
+    # Conditional edge after parse_openapi_spec based on its return value (__next__ key in state)
     builder.add_conditional_edges(
          "parse_openapi_spec",
-         lambda state: state.get("__next__"), # Extract __next__ from updates
+         lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
          {
              "identify_apis": "identify_apis",
              "responder": "responder", # Route to responder on failure
@@ -125,11 +120,10 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
 
 
     # After identifying APIs, generate payload descriptions
-    # Assuming identify_apis returns updates['__next__'] = 'generate_payloads' on success
-    # and updates['__next__'] = 'responder' on failure
+    # Conditional edge after identify_apis based on its return value (__next__ key in state)
     builder.add_conditional_edges(
          "identify_apis",
-         lambda state: state.get("__next__"), # Extract __next__ from updates
+         lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
          {
              "generate_payloads": "generate_payloads",
              "responder": "responder", # Route to responder on failure
@@ -137,11 +131,10 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
     )
 
     # After generating payload descriptions, generate the graph description
-    # Assuming generate_payloads returns updates['__next__'] = 'generate_execution_graph' on success
-    # and updates['__next__'] = 'responder' on failure
+    # Conditional edge after generate_payloads based on its return value (__next__ key in state)
     builder.add_conditional_edges(
          "generate_payloads",
-         lambda state: state.get("__next__"), # Extract __next__ from updates
+         lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
          {
              "generate_execution_graph": "generate_execution_graph",
              "responder": "responder", # Route to responder on failure
@@ -149,11 +142,10 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
     )
 
     # After generating the graph description, describe it
-    # Assuming generate_execution_graph returns updates['__next__'] = 'describe_graph' on success
-    # and updates['__next__'] = 'responder' on failure
+    # Conditional edge after generate_execution_graph based on its return value (__next__ key in state)
     builder.add_conditional_edges(
          "generate_execution_graph",
-         lambda state: state.get("__next__"), # Extract __next__ from updates
+         lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
          {
              "describe_graph": "describe_graph",
              "responder": "responder", # Route to responder on failure
@@ -162,22 +154,51 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
 
 
     # After describing the graph, route to the responder
-    # Assuming describe_graph returns updates['__next__'] = 'responder'
-    builder.add_edge("describe_graph", "responder") # Assuming describe_graph always goes to responder
+    # Conditional edge after describe_graph based on its return value (__next__ key in state)
+    builder.add_conditional_edges(
+        "describe_graph",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {
+            "responder": "responder", # Assuming describe_graph always goes to responder
+            # Add other potential next nodes from describe_graph if any
+        }
+    )
 
 
     # The plan_execution node is available via the router but not part of the default Parse->... flow.
-    # If plan_execution runs, let's route it to the responder to show the plan description.
-    # Assuming plan_execution returns updates['__next__'] = 'responder'
-    builder.add_edge("plan_execution", "responder") # Assuming plan_execution always goes to responder
+    # If plan_execution runs, route based on its return value (__next__ key in state)
+    builder.add_conditional_edges(
+        "plan_execution",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {
+            "responder": "responder", # Assuming plan_execution always goes to responder
+            # Add other potential next nodes from plan_execution if any
+        }
+    )
 
 
-    # Other specific action nodes route directly to the responder after completing their task
-    # Assuming these nodes return updates['__next__'] = 'responder'
-    builder.add_edge("get_graph_json", "responder") # Assuming get_graph_json always goes to responder
-    builder.add_edge("answer_openapi_query", "responder") # Assuming answer_openapi_query always goes to responder
-    builder.add_edge("handle_unknown", "responder") # Assuming handle_unknown always goes to responder
-    builder.add_edge("handle_loop", "responder") # Assuming handle_loop always goes to responder
+    # Other specific action nodes route to the responder after completing their task
+    # Conditional edges based on their return value (__next__ key in state)
+    builder.add_conditional_edges(
+        "get_graph_json",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {"responder": "responder"}
+    )
+    builder.add_conditional_edges(
+        "answer_openapi_query",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {"responder": "responder"}
+    )
+    builder.add_conditional_edges(
+        "handle_unknown",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {"responder": "responder"}
+    )
+    builder.add_conditional_edges(
+        "handle_loop",
+        lambda state: state.__next__, # <-- Condition function: Access __next__ directly from state
+        {"responder": "responder"}
+    )
 
 
     # 3. From the responder node, the graph ends.
@@ -186,14 +207,12 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
     builder.add_edge("responder", END)
 
 
-    # Compile the graph with memory
-    # checkpointer is passed in the startup event in api.py
-    app = builder.compile() # Compile without checkpointer here, it's added when running the app
+    # Compile the graph
+    # checkpointer is passed when running the app instance, not during compile
+    app = builder.compile()
     logger.info("Graph compiled (without API execution capabilities).")
     return app
 
-# Note: The core_logic methods (parse_openapi_spec, identify_apis, etc.) will also need
-# to be updated to return a dictionary of state updates including the '__next__' key
-# to correctly drive the conditional edges added above. This was not explicitly
-# requested in the prompt but is necessary for this graph structure to work.
-# I will provide the updated core_logic.py as well.
+# Note: The core_logic methods (parse_openapi_spec, identify_apis, etc.) and
+# the router.route method must return a dictionary of state updates including
+# the '__next__' key to correctly drive these conditional edges.

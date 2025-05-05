@@ -137,7 +137,7 @@ class OpenAPICoreLogic:
         logger.debug("Executing parse_openapi_spec node.")
 
         updates: Dict[str, Any] = {}
-        # Set an intermediate response message at the start
+        # Set an intermediate response message in updates
         updates['response'] = "Parsing OpenAPI specification..."
 
 
@@ -218,11 +218,8 @@ class OpenAPICoreLogic:
         """
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
-            logger.debug(f"Raw LLM response for parsing: {llm_response[:500]}...")
-
             # Use parse_llm_json_output_with_model without model for initial schema parsing
             parsed_schema = parse_llm_json_output_with_model(llm_response) # Basic JSON parsing
-            logger.debug(f"Result of parsing LLM response: {parsed_schema is not None and isinstance(parsed_schema, dict)}")
 
             if parsed_schema and isinstance(parsed_schema, dict):
                 updates['openapi_schema'] = parsed_schema
@@ -683,23 +680,23 @@ class OpenAPICoreLogic:
           "nodes": [
             {{
               "operationId": "...",
-              "display_name": "...", // Include if operationId is repeated
+              "display_name": "...", # Include if operationId is repeated
               "summary": "...",
-              "payload_description": "...", // <-- THIS SHOULD BE A STRING
+              "payload_description": "...", # <-- THIS SHOULD BE A STRING
               "input_mappings": [
                 {{
-                  "source_operation_id": "...", // operationId or display_name of source node
+                  "source_operation_id": "...", # operationId or display_name of source node
                   "source_data_path": "...",
                   "target_parameter_name": "...",
                   "target_parameter_in": "...",
-                  "transformation": "..." // Optional
+                  "transformation": "..." # Optional
                 }},
                 ...
               ]
             }},
             ...
           ],
-          "edges": [ {{ "from_node": "nodeId1", "to_node": "nodeId2", "description": "..." }}, ... ], // nodeId is display_name or operationId
+          "edges": [ {{ "from_node": "nodeId1", "to_node": "nodeId2", "description": "..." }}, ... ], # nodeId is display_name or operationId
           "description": "Overall workflow description..."
         }}
         ```
@@ -729,10 +726,8 @@ class OpenAPICoreLogic:
                 else:
                     for edge in graph_output.edges:
                          if isinstance(edge, Edge) and hasattr(edge, 'from_node') and hasattr(edge, 'to_node'):
-                              if edge.from_node in node_ids and edge.to_node in node_ids:
-                                   pass # Valid edge
-                              else:
-                                   error_details.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node} (One or both nodes may not exist as effective_id)")
+                              if edge.from_node not in node_ids or edge.to_node not in node_ids:
+                                   error_details.append(f"Edge references non-existent node: {edge.from_node} -> {edge.to_node}")
                                    valid_graph_structure = False
                          else:
                               error_details.append(f"Invalid edge object found: {edge}")
@@ -805,6 +800,8 @@ class OpenAPICoreLogic:
 
         return updates
 
+    # ... (keep other methods like describe_graph, get_graph_json, handle_unknown, handle_loop, answer_openapi_query as is,
+    #      but update their return types and add updates dictionary with __next__ key)
     def describe_graph(self, state: BotState) -> Dict[str, Any]:
         """Generates a natural language description of the current execution graph description using the LLM (if not already described).
            Returns a dictionary of state updates including {'__next__': next_node_name}.
@@ -940,14 +937,11 @@ class OpenAPICoreLogic:
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             updates['response'] = llm_response.strip()
-            state.update_scratchpad_reason(tool_name, "LLM generated response to general query based on context (no execution).")
             logger.info("LLM generated handle_unknown response.")
             updates['__next__'] = "responder" # Route to responder
         except Exception as e:
              logger.error(f"Error calling LLM for unknown intent handling: {e}", exc_info=True)
              updates['response'] = "I'm sorry, I didn't quite understand that request or I'm not ready to perform it in the current state. Could you please rephrase? I can help analyze OpenAPI specs, describe potential API workflows, and answer questions about the spec, but I cannot execute API calls."
-             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
-             logger.error(f"Error calling LLM for unknown intent handling: {e}", exc_info=True)
              updates['__next__'] = "responder" # Route to responder on error
 
         state.update_scratchpad_reason(tool_name, "Provided clarification response (no execution).")
@@ -984,14 +978,11 @@ class OpenAPICoreLogic:
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             updates['response'] = llm_response.strip()
-            state.update_scratchpad_reason(tool_name, "LLM generated handle_loop response.")
             logger.info("LLM generated handle_loop response.")
             updates['__next__'] = "responder" # Route to responder
         except Exception as e:
              logger.error(f"Error calling LLM for handle_loop: {e}", exc_info=True)
              updates['response'] = "It looks like we might be stuck in a loop. Could you please try rephrasing your request or tell me what you'd like to do next? For example, you could ask me to describe the current plan or graph, ask a question about the spec, or provide a new spec. Remember, I can only describe specs and plans, not execute them."
-             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
-             logger.error(f"Error calling LLM for handle_loop: {e}", exc_info=True)
              updates['__next__'] = "responder" # Route to responder on error
 
         state.update_scratchpad_reason(tool_name, "Provided loop handling response (no execution).")
@@ -1102,7 +1093,6 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for answer_openapi_query: {e}", exc_info=True)
             updates['__next__'] = "responder" # Route to responder on error
 
-        state.update_scratchpad_reason(tool_name, "Provided clarification response (no execution).")
         return updates
 
 # Note: The AddEdgeParams, GeneratePayloadsParams, GenerateGraphParams models

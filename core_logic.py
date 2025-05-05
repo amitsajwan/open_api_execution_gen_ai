@@ -617,7 +617,7 @@ class OpenAPICoreLogic:
             {{
               "operationId": "...",
               "summary": "...",
-              "payload_description": {{...}} or null, // Holds the description from generate_payloads
+              "payload_description": "...", // This should be the string description
               "input_mappings": [
                 {{
                   "source_operation_id": "...",
@@ -645,6 +645,7 @@ class OpenAPICoreLogic:
         try:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             # Use parse_llm_json_output with the expected model for validation
+            # The model validation will now expect payload_description to be a string
             graph_output = parse_llm_json_output(llm_response, expected_model=GraphOutput)
 
             if graph_output and isinstance(graph_output, GraphOutput):
@@ -944,3 +945,8 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for answer_openapi_query: {e}", exc_info=True)
 
         return state
+
+# Note: The AddEdgeParams, GeneratePayloadsParams, GenerateGraphParams models
+# are defined in models.py and used here via type hints for clarity,
+# but their validation/parsing from state.extracted_params happens within
+# the respective methods (generate_payloads, generate_execution_graph).

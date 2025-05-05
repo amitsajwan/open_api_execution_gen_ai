@@ -169,3 +169,43 @@ if __name__ == "__main__":
             # Optionally break the loop or try to recover
 
     print("\nSession ended. Goodbye!")
+
+
+async def handle_websocket_message(websocket, path):
+    session_id = # Get or create session ID for the user
+
+    async for message in websocket:
+        user_input = message
+        config = {"configurable": {"thread_id": session_id}}
+        current_input = {"user_input": user_input, "session_id": session_id}
+
+        try:
+            async for intermediate_state in app.astream(current_input, config=config, stream_mode="values"): # Use astream for async
+                 # Process each state update
+                 intermediate_response = intermediate_state.get("response")
+                 if intermediate_response:
+                     # Send intermediate message to user via WebSocket
+                     await websocket.send(json.dumps({"type": "intermediate_message", "content": intermediate_response}))
+
+                 # Keep track of the last state
+                 final_state_snapshot = intermediate_state
+
+            # After the stream finishes, process the final state
+            final_response = final_state_snapshot.get("final_response")
+            if final_response:
+                 # Send the final response message
+                 await websocket.send(json.dumps({"type": "final_response", "content": final_response}))
+            else:
+                 # Handle cases where final_response wasn't set (e.g., error)
+                 await websocket.send(json.dumps({"type": "error", "content": "Processing finished without a final response."}))
+
+            # For specific queries like "list apis", you might need additional logic here
+            # Example: Check user_input and look at final_state_snapshot.get("identified_apis")
+            # This requires knowing the user's original intent *after* the graph completes.
+            # A simpler approach is to let answer_openapi_query format the list into final_response.
+
+
+        except Exception as e:
+            error_message = f"An error occurred: {e}"
+            print(f"Error: {e}")
+            await websocket.send(json.dumps({"type": "error", "content": error_message}))

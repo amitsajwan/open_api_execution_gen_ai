@@ -621,7 +621,7 @@ class OpenAPICoreLogic:
                 updates['graph_generation_instructions'] = combined_instructions # Store combined in updates
                 logger.debug(f"Graph description params from extracted_params: Goal='{user_goal}', Instructions='{graph_instructions}'")
             except Exception as e:
-                logger.warning(f"Could not parse GenerateGraphParams from extracted_params: {e}. Using default behavior.")
+                logger.warning(f"Could not parse GenerateGraphParams from extracted_params: {e}. Using state fields/defaults.")
                 user_goal = state.extracted_params.get("goal", user_goal) or state.user_input
                 graph_instructions = state.extracted_params.get("instructions", graph_instructions) or "Describe typical dependencies and data flow."
                 combined_instructions = f"Goal: {user_goal}\nInstructions: {graph_instructions}"
@@ -985,7 +985,7 @@ class OpenAPICoreLogic:
             updates['__next__'] = "responder" # <-- Route to responder
         except Exception as e:
              logger.error(f"Error calling LLM for handle_loop: {e}", exc_info=True)
-             updates['response'] = "It looks like we might be stuck in a loop. Could you please try rephrasing your request or tell me what you'd like to do next? For example, you could ask me to describe the current plan or graph, ask a question about the spec, or provide a new spec. Remember, I can only describe API specs and potential workflows, not execute them."
+             updates['response'] = "It looks like we might be stuck in a loop. Could you please try rephrasing your request or tell me what you'd like to do next? For example, you could ask me to describe the current plan or graph, ask a question about the spec, or provide a new spec. Remember, I can only describe specs and plans, not execute them."
              updates['__next__'] = "responder" # <-- Route to responder on error
 
         state.update_scratchpad_reason(tool_name, "Provided loop handling response (no execution).")

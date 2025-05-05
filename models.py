@@ -25,20 +25,29 @@ class InputMapping(BaseModel):
 class Node(BaseModel):
     """Represents a node (an API call description) in the execution graph."""
     operationId: str = Field(..., description="Unique identifier for the API operation (from OpenAPI spec).")
+    display_name: Optional[str] = Field(None, description="A unique display name for this node instance, useful for differentiating multiple calls to the same operation.") # Added display_name
     summary: Optional[str] = Field(None, description="Short summary of the operation (from OpenAPI spec).")
     description: Optional[str] = Field(None, description="Detailed description of the operation.")
     # Renamed from example_payload to payload_description for clarity
     payload_description: Optional[Dict[str, Any]] = Field(None, description="Description of an example payload for this API call.")
     input_mappings: List[InputMapping] = Field(default_factory=list, description="Instructions on how data would be mapped from previous described results.")
 
+    # Add a computed property or method to get the effective node ID for graph structure
+    # This ensures edges/cycle checks use a unique identifier
+    @property
+    def effective_id(self) -> str:
+        """Returns the unique identifier for this node instance in the graph."""
+        return self.display_name if self.display_name else self.operationId
+
 
 class Edge(BaseModel):
     """Represents a directed edge (dependency) in the execution graph description."""
-    from_node: str = Field(..., description="The operationId of the source node.")
-    to_node: str = Field(..., description="The operationId of the target node.")
+    # Edges should now reference the effective_id (operationId or display_name)
+    from_node: str = Field(..., description="The effective_id (operationId or display_name) of the source node.")
+    to_node: str = Field(..., description="The effective_id (operationId or display_name) of the target node.")
     description: Optional[str] = Field(None, description="Optional description of why this dependency exists (e.g., data dependency).")
 
-    # Make Edge hashable for use in sets
+    # Make Edge hashable for use in sets (use effective_id)
     def __hash__(self):
         return hash((self.from_node, self.to_node))
 
@@ -59,8 +68,8 @@ class GraphOutput(BaseModel):
 
 class AddEdgeParams(BaseModel):
     """Parameters required for the add_edge tool."""
-    from_node: str = Field(..., description="The operationId of the source node.")
-    to_node: str = Field(..., description="The operationId of the target node.")
+    from_node: str = Field(..., description="The operationId or display_name of the source node.") # Updated description
+    to_node: str = Field(..., description="The operationId or display_name of the target node.") # Updated description
     description: Optional[str] = Field(None, description="Optional description for the new edge.")
 
 class GeneratePayloadsParams(BaseModel):
@@ -76,6 +85,7 @@ class GenerateGraphParams(BaseModel):
 # --- State Model ---
 
 class BotState(BaseModel):
+    # ... (rest of BotState model remains the same)
     """Represents the full state of the conversation and processing."""
     session_id: str = Field(..., description="Unique identifier for the current session.")
     user_input: Optional[str] = Field(None, description="The latest input from the user.")
@@ -138,4 +148,3 @@ class BotState(BaseModel):
         combined = (current_reason + new_entry)[-5000:]
         self.scratchpad['reasoning_log'] = combined
         logger.debug(f"Scratchpad Updated by {tool_name}: {details}")
-

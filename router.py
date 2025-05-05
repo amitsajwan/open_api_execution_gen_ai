@@ -6,8 +6,9 @@ import re # Import regex for spec detection
 # Assuming models.py defines BotState
 from models import BotState
 
-# Assuming utils.py has llm_call_helper and parse_llm_json_output
-from utils import llm_call_helper, parse_llm_json_output
+# Assuming utils.py has llm_call_helper and the renamed JSON parsing utility
+# Corrected import statement:
+from utils import llm_call_helper, parse_llm_json_output_with_model
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class OpenAPIRouter:
                     state.update_scratchpad_reason("router", f"LLM returned invalid intent '{llm_response.strip()}'. Defaulted to '{determined_intent}'.")
                 # Prevent LLM from choosing parse_openapi_spec if heuristic didn't catch it
                 elif determined_intent == "parse_openapi_spec":
-                     logger.warning(f"Router LLM chose '{determined_intent}' but heuristic didn't detect spec. Overriding to handle_unknown.")
+                     logger.warning(f"Router LLM chose '{determined_intent}' unexpectedly. Overriding to handle_unknown.")
                      determined_intent = "handle_unknown"
                      state.update_scratchpad_reason("router", f"LLM chose '{determined_intent}' unexpectedly. Defaulted to '{determined_intent}'.")
                 else:
@@ -153,7 +154,7 @@ class OpenAPIRouter:
                  state.loop_counter = loop_counter
                  final_intent = determined_intent
         else:
-            # Reset loop counter if intent changes or is a final/parse state
+            # Reset loop counter if intent changes or is final/parse state
             state.loop_counter = 0
             final_intent = determined_intent
             # logger.debug("Router: Intent changed or is final/parse state. Resetting loop counter.")

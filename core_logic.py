@@ -122,7 +122,7 @@ class OpenAPICoreLogic:
 
     # --- Tool Methods (Designed as Graph Nodes) ---
 
-    def parse_openapi_spec(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def parse_openapi_spec(self, state: BotState) -> Dict[str, Any]:
         """
         Parses the raw OpenAPI spec text provided in the state.
         Relies on state.input_is_spec flag set by the router to confirm input is likely a spec.
@@ -136,7 +136,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting OpenAPI spec parsing.")
         logger.debug("Executing parse_openapi_spec node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         # Set an intermediate response message in updates
         updates['response'] = "Parsing OpenAPI specification..."
 
@@ -153,8 +153,8 @@ class OpenAPICoreLogic:
             updates['schema_cache_key'] = None
             # Reset flag (though it was already false) in updates
             updates['input_is_spec'] = False
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
 
         # Get the spec text from user_input (router should have placed it there)
         spec_text_to_parse = state.user_input
@@ -168,8 +168,8 @@ class OpenAPICoreLogic:
             updates['schema_summary'] = None
             updates['schema_cache_key'] = None
             updates['input_is_spec'] = False # Reset flag in updates
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
 
         # Store the raw spec text in the dedicated field in updates
         updates['openapi_spec_text'] = spec_text_to_parse
@@ -193,8 +193,8 @@ class OpenAPICoreLogic:
             updates['response'] = "Successfully loaded parsed OpenAPI schema from cache and generated summary."
             state.update_scratchpad_reason(tool_name, f"Loaded schema from cache (key: {cache_key}). Generated summary.")
             logger.info("Loaded OpenAPI schema from cache and generated summary.")
-            updates['__next__'] = "identify_apis" # <-- Route to next step on success
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "identify_apis" # Route to next step on success
+            return updates
 
         # If not cached, use LLM to parse
         state.update_scratchpad_reason(tool_name, "Schema not found in cache. Using LLM to parse.")
@@ -231,7 +231,7 @@ class OpenAPICoreLogic:
                 logger.info("LLM successfully parsed OpenAPI schema and generated summary.")
                 # Save the newly parsed schema to cache
                 save_schema_to_cache(cache_key, parsed_schema)
-                updates['__next__'] = "identify_apis" # <-- Route to next step on success
+                updates['__next__'] = "identify_apis" # Route to next step on success
             else:
                 # Update response message in updates
                 updates['response'] = "Error: LLM did not return a valid JSON object for the OpenAPI schema. Please check the format of your specification."
@@ -240,7 +240,7 @@ class OpenAPICoreLogic:
                 updates['openapi_schema'] = None
                 updates['schema_summary'] = None # Ensure summary is cleared on parsing failure
                 updates['schema_cache_key'] = None # Clear cache key as parsing failed
-                updates['__next__'] = "responder" # <-- Route to responder on failure
+                updates['__next__'] = "responder" # Route to responder on failure
 
         except Exception as e:
             # Update response message in updates
@@ -250,12 +250,11 @@ class OpenAPICoreLogic:
             updates['openapi_schema'] = None
             updates['schema_summary'] = None # Ensure summary is cleared on error
             updates['schema_cache_key'] = None # Clear cache key on error
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-
-    def plan_execution(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def plan_execution(self, state: BotState) -> Dict[str, Any]:
         """
         Planner node: break the user's high-level goal and current state
         into an ordered list of tool-names (or operationIds) describing a plan.
@@ -267,7 +266,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting execution planning (description only).")
         logger.debug("Executing plan_execution node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Generating execution plan description..."
 
 
@@ -277,8 +276,8 @@ class OpenAPICoreLogic:
             logger.error("plan_execution called without openapi_schema.")
             updates['execution_plan'] = []
             updates['current_plan_step'] = 0
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
 
         schema_summary = state.schema_summary
         user_goal = state.user_input or "Generate a typical workflow description." # Default goal for planning
@@ -327,14 +326,14 @@ class OpenAPICoreLogic:
                       updates['response'] = f"Based on your goal, I've described a potential plan with these steps: {updates['execution_plan']}"
                       state.update_scratchpad_reason(tool_name, f"LLM generated plan description: {updates['execution_plan']}")
                       logger.info(f"Generated execution plan (description): {updates['execution_plan']}")
-                      updates['__next__'] = "responder" # <-- Route to responder on success
+                      updates['__next__'] = "responder" # Route to responder on success
                  else:
                       updates['response'] = "Could not generate a valid execution plan description based on the available APIs or the plan was empty after validation."
                       state.update_scratchpad_reason(tool_name, f"LLM generated invalid or empty plan description. Original steps: {steps}, Validated: {validated_steps}")
                       logger.error(f"LLM generated invalid or empty plan description. Raw LLM response: {llm_response}")
                       updates['execution_plan'] = [] # Clear plan on failure
                       updates['current_plan_step'] = 0
-                      updates['__next__'] = "responder" # <-- Route to responder on failure
+                      updates['__next__'] = "responder" # Route to responder on failure
 
             else:
                  # Fallback if LLM output is invalid format
@@ -343,7 +342,7 @@ class OpenAPICoreLogic:
                  logger.error(f"LLM returned invalid plan format: {llm_response}")
                  updates['execution_plan'] = [] # Clear plan on failure
                  updates['current_plan_step'] = 0
-                 updates['__next__'] = "responder" # <-- Route to responder on failure
+                 updates['__next__'] = "responder" # Route to responder on failure
 
         except Exception as e:
             updates['response'] = f"Error during planning description LLM call: {e}"
@@ -351,11 +350,11 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for planning description: {e}", exc_info=True)
             updates['execution_plan'] = [] # Clear plan on error
             updates['current_plan_step'] = 0
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-    def identify_apis(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def identify_apis(self, state: BotState) -> Dict[str, Any]:
         """
         Identifies relevant API endpoints from the parsed schema based on user goal or general analysis.
         Uses the worker LLM. Updates state.identified_apis and state.response.
@@ -365,7 +364,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting API identification.")
         logger.debug("Executing identify_apis node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Identifying relevant APIs..."
 
 
@@ -373,14 +372,14 @@ class OpenAPICoreLogic:
             updates['response'] = "Error: Cannot identify APIs without a parsed OpenAPI schema. Please provide/parse a spec first."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("identify_apis called without openapi_schema.")
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
         if not state.schema_summary:
              updates['response'] = "Error: Cannot identify APIs without a schema summary. Please parse the spec again."
              state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
              logger.error("identify_apis called without schema_summary.")
-             updates['__next__'] = "responder" # <-- Route to responder on failure
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder on failure
+             return updates
 
         schema_summary = state.schema_summary
         # Use graph_generation_instructions or user_input as context for identification
@@ -424,25 +423,24 @@ class OpenAPICoreLogic:
                 updates['response'] = f"Identified {len(valid_apis)} potentially relevant API endpoints based on the context."
                 state.update_scratchpad_reason(tool_name, f"LLM identified {len(valid_apis)} APIs. First few: {valid_apis[:3]}")
                 logger.info(f"Identified APIs: {valid_apis}")
-                updates['__next__'] = "generate_payloads" # <-- Route to next step on success
+                updates['__next__'] = "generate_payloads" # Route to next step on success
             else:
                 updates['response'] = "Error: LLM did not return a valid JSON list of identified APIs."
                 state.update_scratchpad_reason(tool_name, f"LLM API identification failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to identify APIs in valid JSON list format. Response: {llm_response[:500]}")
                 updates['identified_apis'] = None # Clear on failure
-                updates['__next__'] = "responder" # <-- Route to responder on failure
+                updates['__next__'] = "responder" # Route to responder on failure
 
         except Exception as e:
             updates['response'] = f"Error during API identification LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for API identification: {e}", exc_info=True)
             updates['identified_apis'] = None # Clear on error
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-
-    def generate_payloads(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def generate_payloads(self, state: BotState) -> Dict[str, Any]:
         """
         Generates example payload descriptions (as strings) for identified API operations using the LLM.
         Considers user instructions if provided via state.payload_generation_instructions
@@ -454,7 +452,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting payload generation (description only).")
         logger.debug("Executing generate_payloads node (description only).")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Generating example payload descriptions..."
 
 
@@ -462,14 +460,14 @@ class OpenAPICoreLogic:
             updates['response'] = "Error: Cannot generate payload descriptions without a parsed OpenAPI schema."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("generate_payloads called without openapi_schema.")
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
         if not state.schema_summary:
              updates['response'] = "Error: Cannot generate payload descriptions without a schema summary. Please parse the spec again."
              state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
              logger.error("generate_payloads called without schema_summary.")
-             updates['__next__'] = "responder" # <-- Route to responder on failure
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder on failure
+             return updates
 
         apis_to_process = state.identified_apis
         # Check for specific instructions or target APIs from parameters (extracted by router or planner)
@@ -507,8 +505,8 @@ class OpenAPICoreLogic:
              state.update_scratchpad_reason(tool_name, "Failed: No APIs to process for payload descriptions.")
              logger.error("generate_payloads called with no APIs to process.")
              updates['payload_descriptions'] = None # Ensure cleared
-             updates['__next__'] = "responder" # <-- Route to responder on failure
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder on failure
+             return updates
 
         schema_summary = state.schema_summary
         api_list_str = json.dumps(apis_to_process, indent=2)
@@ -549,24 +547,24 @@ class OpenAPICoreLogic:
                 updates['response'] = f"Generated descriptions for example payloads for {len(described_payloads)} API operations."
                 state.update_scratchpad_reason(tool_name, f"LLM generated payload descriptions for keys: {list(described_payloads.keys())}")
                 logger.info(f"Generated Payload Descriptions: {described_payloads}")
-                updates['__next__'] = "generate_execution_graph" # <-- Route to next step on success
+                updates['__next__'] = "generate_execution_graph" # Route to next step on success
             else:
-                updates['response'] = "Error: LLM did not return a valid JSON object mapping operationIds to payload descriptions (values should be strings)." # <-- UPDATED ERROR MESSAGE
+                updates['response'] = "Error: LLM did not return a valid JSON object mapping operationIds to payload descriptions (values should be strings)." # UPDATED ERROR MESSAGE
                 state.update_scratchpad_reason(tool_name, f"LLM payload description failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to generate payload descriptions in valid JSON object format (values not strings). Response: {llm_response[:500]}")
                 updates['payload_descriptions'] = None # Clear on failure
-                updates['__next__'] = "responder" # <-- Route to responder on failure
+                updates['__next__'] = "responder" # Route to responder on failure
 
         except Exception as e:
             updates['response'] = f"Error during payload description LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for payload description: {e}", exc_info=True)
             updates['payload_descriptions'] = None # Clear on error
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-    def generate_execution_graph(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def generate_execution_graph(self, state: BotState) -> Dict[str, Any]:
         """
         Generates a directed acyclic graph (DAG) describing the execution flow
         of identified APIs, considering dependencies and user goals/instructions.
@@ -579,7 +577,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting execution graph generation (description only).")
         logger.debug("Executing generate_execution_graph node (description only).")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Generating execution graph description..."
 
 
@@ -587,14 +585,14 @@ class OpenAPICoreLogic:
             updates['response'] = "Error: Cannot generate execution graph description without a parsed OpenAPI schema."
             state.update_scratchpad_reason(tool_name, "Failed: Schema missing.")
             logger.error("generate_execution_graph called without openapi_schema.")
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
         if not state.schema_summary:
              updates['response'] = "Error: Cannot generate execution graph description without a schema summary. Please parse the spec again."
              state.update_scratchpad_reason(tool_name, "Failed: Schema summary missing.")
              logger.error("generate_execution_graph called without schema_summary.")
-             updates['__next__'] = "responder" # <-- Route to responder on failure
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder on failure
+             return updates
         if not state.identified_apis:
             updates['response'] = "Warning: No specific APIs identified. Attempting to generate a graph description based on the full schema summary and goal, but it might be less focused. Try identifying APIs first."
             state.update_scratchpad_reason(tool_name, "Warning: No APIs identified. Proceeding with full schema context.")
@@ -769,14 +767,14 @@ class OpenAPICoreLogic:
                     state.update_scratchpad_reason(tool_name, f"Graph description failed: Cycle detected. {cycle_msg}")
                     logger.error(f"LLM generated cyclic graph description: {cycle_msg}")
                     updates['execution_graph'] = None
-                    updates['__next__'] = "responder" # <-- Route to responder on failure
+                    updates['__next__'] = "responder" # Route to responder on failure
                 elif not valid_graph_structure:
                     error_msg = f"Error: LLM generated a graph description with structural errors (invalid edges or mappings). Details: {'; '.join(error_details)}"
                     updates['response'] = error_msg
                     state.update_scratchpad_reason(tool_name, f"Graph description failed: Structural errors. {error_details}")
                     logger.error(f"LLM generated graph description with structural errors: {error_details}")
                     updates['execution_graph'] = None
-                    updates['__next__'] = "responder" # <-- Route to responder on failure
+                    updates['__next__'] = "responder" # Route to responder on failure
                 else:
                     updates['execution_graph'] = graph_output
                     updates['response'] = f"Successfully generated execution graph description with {len(graph_output.nodes)} nodes and {len(graph_output.edges)} dependencies."
@@ -784,27 +782,27 @@ class OpenAPICoreLogic:
                          updates['response'] += f" Workflow Description: {graph_output.description}"
                     state.update_scratchpad_reason(tool_name, f"LLM generated graph description. Nodes: {len(graph_output.nodes)}, Edges: {len(graph_output.edges)}. Desc: {graph_output.description}")
                     logger.info(f"Generated Graph Description: {graph_output.model_dump_json(indent=2)}")
-                    updates['__next__'] = "describe_graph" # <-- Route to next step on success
+                    updates['__next__'] = "describe_graph" # Route to next step on success
 
             else:
                 updates['response'] = "Error: LLM did not return a valid JSON object matching the GraphOutput structure for the graph description."
                 state.update_scratchpad_reason(tool_name, f"LLM graph generation failed. Raw response: {llm_response[:500]}...")
                 logger.error(f"LLM failed to generate graph description in valid GraphOutput format. Response: {llm_response[:500]}")
                 updates['execution_graph'] = None
-                updates['__next__'] = "responder" # <-- Route to responder on failure
+                updates['__next__'] = "responder" # Route to responder on failure
 
         except Exception as e:
             updates['response'] = f"Error during graph generation LLM call: {e}"
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for graph generation: {e}", exc_info=True)
             updates['execution_graph'] = None
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
     # ... (keep other methods like describe_graph, get_graph_json, handle_unknown, handle_loop, answer_openapi_query as is,
     #      but update their return types and add updates dictionary with __next__ key)
-    def describe_graph(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def describe_graph(self, state: BotState) -> Dict[str, Any]:
         """Generates a natural language description of the current execution graph description using the LLM (if not already described).
            Returns a dictionary of state updates including {'__next__': next_node_name}.
         """
@@ -812,7 +810,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting graph description.")
         logger.debug("Executing describe_graph node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Describing the generated graph..."
 
 
@@ -820,8 +818,8 @@ class OpenAPICoreLogic:
             updates['response'] = "Error: No execution graph description exists to describe. Try generating one first."
             state.update_scratchpad_reason(tool_name, "Failed: Graph missing.")
             logger.error("describe_graph called without execution_graph.")
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
 
         # Use existing description if available and seems reasonable
         if state.execution_graph.description and len(state.execution_graph.description) > 20:
@@ -829,8 +827,8 @@ class OpenAPICoreLogic:
              updates['response'] = state.execution_graph.description # Set the description as the response
              state.update_scratchpad_reason(tool_name, "Used existing graph description.")
              logger.info("Using existing graph description.")
-             updates['__next__'] = "responder" # <-- Route to responder
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder
+             return updates
 
         # Generate description if missing or too short
         graph_json = state.execution_graph.model_dump_json(indent=2)
@@ -857,7 +855,7 @@ class OpenAPICoreLogic:
             updates['execution_graph'] = updated_graph
             state.update_scratchpad_reason(tool_name, f"LLM generated graph description (length {len(description)}).")
             logger.info(f"Generated graph description: {description}")
-            updates['__next__'] = "responder" # <-- Route to responder on success
+            updates['__next__'] = "responder" # Route to responder on success
 
         except Exception as e:
             updates['response'] = f"Error during graph description LLM call: {e}"
@@ -865,11 +863,11 @@ class OpenAPICoreLogic:
             logger.error(f"Error calling LLM for graph description: {e}", exc_info=True)
             # Provide a basic fallback response if LLM fails
             updates['response'] = f"Could not generate a detailed description via LLM, but the graph description contains {len(state.execution_graph.nodes)} steps and {len(state.execution_graph.edges)} dependencies."
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-    def get_graph_json(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def get_graph_json(self, state: BotState) -> Dict[str, Any]:
         """Outputs the current execution graph description as a JSON string.
            Returns a dictionary of state updates including {'__next__': next_node_name}.
         """
@@ -877,7 +875,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, "Starting get graph JSON.")
         logger.debug("Executing get_graph_json node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Formatting graph description as JSON..."
 
 
@@ -885,8 +883,8 @@ class OpenAPICoreLogic:
             updates['response'] = "Error: No execution graph description exists to output. Try generating one first."
             state.update_scratchpad_reason(tool_name, "Failed: Graph missing.")
             logger.error("get_graph_json called without execution_graph.")
-            updates['__next__'] = "responder" # <-- Route to responder on failure
-            return updates # <-- Return updates dictionary
+            updates['__next__'] = "responder" # Route to responder on failure
+            return updates
 
         try:
             # Output JSON with indentation for readability
@@ -895,16 +893,16 @@ class OpenAPICoreLogic:
             updates['response'] = f"```json\n{graph_json}\n```"
             state.update_scratchpad_reason(tool_name, "Outputted graph JSON.")
             logger.info("Outputted graph JSON.")
-            updates['__next__'] = "responder" # <-- Route to responder on success
+            updates['__next__'] = "responder" # Route to responder on success
         except Exception as e:
             updates['response'] = f"Error serializing graph description to JSON: {e}"
             state.update_scratchpad_reason(tool_name, f"JSON serialization error: {e}")
             logger.error(f"Error serializing graph description: {e}", exc_info=True)
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
-    def handle_unknown(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def handle_unknown(self, state: BotState) -> Dict[str, Any]:
         """Handles cases where the user's intent is unclear or not supported.
            Returns a dictionary of state updates including {'__next__': next_node_name}.
         """
@@ -912,7 +910,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, f"Handling unknown intent for input: {state.user_input}")
         logger.debug("Executing handle_unknown node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Trying to understand your request..."
 
 
@@ -940,17 +938,16 @@ class OpenAPICoreLogic:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             updates['response'] = llm_response.strip()
             logger.info("LLM generated handle_unknown response.")
-            updates['__next__'] = "responder" # <-- Route to responder
+            updates['__next__'] = "responder" # Route to responder
         except Exception as e:
              logger.error(f"Error calling LLM for unknown intent handling: {e}", exc_info=True)
              updates['response'] = "I'm sorry, I didn't quite understand that request or I'm not ready to perform it in the current state. Could you please rephrase? I can help analyze OpenAPI specs, describe potential API workflows, and answer questions about the spec, but I cannot execute API calls."
-             updates['__next__'] = "responder" # <-- Route to responder on error
+             updates['__next__'] = "responder" # Route to responder on error
 
         state.update_scratchpad_reason(tool_name, "Provided clarification response (no execution).")
-        return updates # <-- Return updates dictionary
+        return updates
 
-
-    def handle_loop(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def handle_loop(self, state: BotState) -> Dict[str, Any]:
         """
         Called when the router detects the same intent repeating.
         Place a message into state to ask the user how to proceed.
@@ -960,7 +957,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, f"Handling detected loop for previous intent: {state.previous_intent}")
         logger.debug("Executing handle_loop node.")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "It seems we might be in a loop..."
 
 
@@ -982,16 +979,16 @@ class OpenAPICoreLogic:
             llm_response = llm_call_helper(self.worker_llm, prompt)
             updates['response'] = llm_response.strip()
             logger.info("LLM generated handle_loop response.")
-            updates['__next__'] = "responder" # <-- Route to responder
+            updates['__next__'] = "responder" # Route to responder
         except Exception as e:
              logger.error(f"Error calling LLM for handle_loop: {e}", exc_info=True)
              updates['response'] = "It looks like we might be stuck in a loop. Could you please try rephrasing your request or tell me what you'd like to do next? For example, you could ask me to describe the current plan or graph, ask a question about the spec, or provide a new spec. Remember, I can only describe specs and plans, not execute them."
-             updates['__next__'] = "responder" # <-- Route to responder on error
+             updates['__next__'] = "responder" # Route to responder on error
 
         state.update_scratchpad_reason(tool_name, "Provided loop handling response (no execution).")
-        return updates # <-- Return updates dictionary
+        return updates
 
-    def answer_openapi_query(self, state: BotState) -> Dict[str, Any]: # <-- Return type hint is now Dict[str, Any]
+    def answer_openapi_query(self, state: BotState) -> Dict[str, Any]:
         """
         Answers general informational queries about the loaded OpenAPI specification,
         identified APIs, generated payload descriptions, or the execution graph description
@@ -1003,7 +1000,7 @@ class OpenAPICoreLogic:
         state.update_scratchpad_reason(tool_name, f"Starting to answer general query about spec/plan: {state.user_input}")
         logger.debug("Executing answer_openapi_query node (no execution).")
 
-        updates: Dict[str, Any] = {} # <-- Initialize updates dictionary
+        updates: Dict[str, Any] = {}
         updates['response'] = "Answering your question based on the loaded spec and generated artifacts..."
 
 
@@ -1020,8 +1017,8 @@ class OpenAPICoreLogic:
              updates['response'] = "I don't have an OpenAPI specification loaded or any described artifacts (like identified APIs, plans, or graphs) yet. Please provide a spec or ask me to generate something first."
              state.update_scratchpad_reason(tool_name, "Cannot answer query: No schema or artifacts available.")
              logger.info("Cannot answer OpenAPI query: No schema or generated artifacts.")
-             updates['__next__'] = "responder" # <-- Route to responder on failure
-             return updates # <-- Return updates dictionary
+             updates['__next__'] = "responder" # Route to responder on failure
+             return updates
 
         # Construct a prompt for the LLM using available state information
         prompt_parts = [f"The user is asking a question: \"{query}\""]
@@ -1089,14 +1086,14 @@ class OpenAPICoreLogic:
             updates['response'] = llm_response.strip()
             state.update_scratchpad_reason(tool_name, "LLM generated response to general query based on context (no execution).")
             logger.info("LLM generated response for general OpenAPI query (no execution).")
-            updates['__next__'] = "responder" # <-- Route to responder on success
+            updates['__next__'] = "responder" # Route to responder on success
         except Exception as e:
             updates['response'] = f"I encountered an error while trying to answer your question about the OpenAPI specification: {e}. Please try rephrasing. Remember, I can only describe specs and plans, not execute them."
             state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
             logger.error(f"Error calling LLM for answer_openapi_query: {e}", exc_info=True)
-            updates['__next__'] = "responder" # <-- Route to responder on error
+            updates['__next__'] = "responder" # Route to responder on error
 
-        return updates # <-- Return updates dictionary
+        return updates
 
 # Note: The AddEdgeParams, GeneratePayloadsParams, GenerateGraphParams models
 # are defined in models.py and used here via type hints for clarity,

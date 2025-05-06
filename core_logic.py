@@ -1,112 +1,228 @@
-# filename: core_logic.py
-# ... (imports and other methods remain the same) ...
-
-class OpenAPICoreLogic:
-    # ... (__init__ and other methods remain the same) ...
-
-    def answer_openapi_query(self, state: BotState) -> Dict[str, Any]:
-        """
-        Answers general informational queries about the loaded OpenAPI specification,
-        identified APIs, generated payload descriptions, or the execution graph description
-        using the worker LLM and available state data.
-        Emphasizes that these are descriptions/plans, not execution results.
-        Returns a dictionary of state updates including {'__next__': next_node_name}.
-        """
-        tool_name = "answer_openapi_query"
-        state.update_scratchpad_reason(tool_name, f"Starting to answer general query about spec/plan: {state.user_input}")
-        logger.debug("Executing answer_openapi_query node (no execution).")
-
-        updates: Dict[str, Any] = {}
-        updates['response'] = "Answering your question based on the loaded spec and generated artifacts..."
-
-
-        query = state.user_input
-        schema_loaded = state.openapi_schema is not None
-        graph_exists = state.execution_graph is not None
-        apis_identified = state.identified_apis is not None
-        payloads_described = state.payload_descriptions is not None
-        plan_exists = state.execution_plan is not None and len(state.execution_plan) > 0
-
-        if not schema_loaded and not graph_exists and not plan_exists and not apis_identified:
-             updates['response'] = "I don't have an OpenAPI specification loaded or any described artifacts (like identified APIs, plans, or graphs) yet. Please provide a spec or ask me to generate something first."
-             state.update_scratchpad_reason(tool_name, "Cannot answer query: No schema or artifacts available.")
-             logger.info("Cannot answer OpenAPI query: No schema or generated artifacts.")
-             updates['__next__'] = "responder"
-             return updates
-
-        # Construct a prompt for the LLM using available state information
-        prompt_parts = [f"The user is asking a question: \"{query}\""]
-        prompt_parts.append("\nAnswer the question based *only* on the following context about the currently loaded OpenAPI specification and described artifacts.")
-        prompt_parts.append("--- START CONTEXT ---")
-
-        if schema_loaded and state.schema_summary:
-             prompt_parts.append("\nAvailable OpenAPI Schema Summary:")
-             prompt_parts.append("```")
-             prompt_parts.append(state.schema_summary[:3000] + ("..." if len(state.schema_summary) > 3000 else ""))
-             prompt_parts.append("```")
-        elif schema_loaded:
-             prompt_parts.append("\nContext: An OpenAPI Schema is loaded, but its summary is not available or too long to include fully.")
-        else: # Should not happen due to check above, but good practice
-             prompt_parts.append("\nContext: No OpenAPI Schema is loaded.")
-
-
-        if apis_identified:
-             prompt_parts.append(f"\nIdentified APIs ({len(state.identified_apis)} found):")
-             api_summaries = [f"- {api.get('operationId', 'N/A')}: {api.get('summary', 'No summary')} ({api.get('method','').upper()} {api.get('path','')})" for api in state.identified_apis[:15]]
-             prompt_parts.append("\n".join(api_summaries))
-             if len(state.identified_apis) > 15:
-                 prompt_parts.append(f"... and {len(state.identified_apis) - 15} more.")
-
-        if graph_exists:
-             prompt_parts.append("\nExecution Graph Description Exists:")
-             prompt_parts.append(f"- Description: {state.execution_graph.description or 'No overall description provided.'}")
-             prompt_parts.append(f"- Nodes (Steps): {len(state.execution_graph.nodes)}")
-             node_ids_list = [node.effective_id for node in state.execution_graph.nodes]
-             prompt_parts.append(f"- Edges (Dependencies): {len(state.execution_graph.edges)}")
-             if len(node_ids_list) < 15:
-                 node_list = ", ".join(node_ids_list)
-                 prompt_parts.append(f"  Node Sequence (approx): {node_list}")
-             else:
-                 prompt_parts.append(f"  Node IDs: {', '.join(node_ids_list[:15])}...")
-
-
-        if plan_exists:
-             prompt_parts.append(f"\nExecution Plan Description Exists:")
-             prompt_parts.append(f"- Steps: {len(state.execution_plan)}")
-             prompt_parts.append(f"  Plan Sequence: {state.execution_plan}")
-
-        if payloads_described:
-             prompt_parts.append(f"\nExample Payload Descriptions Generated for {len(state.payload_descriptions)} operations.")
-             payload_desc_previews = [f"- {op_id}: {desc[:60]}..." for op_id, desc in list(state.payload_descriptions.items())[:10]]
-             prompt_parts.append("  Example Descriptions:")
-             prompt_parts.append("\n".join(payload_desc_previews))
-             if len(state.payload_descriptions) > 10:
-                 prompt_parts.append(f"... and descriptions for {len(state.payload_descriptions) - 10} more operations.")
-
-        prompt_parts.append("\n--- END CONTEXT ---")
-        prompt_parts.append("\nInstructions for Answering:")
-        prompt_parts.append("1. Carefully read the user's question.")
-        prompt_parts.append("2. Find the answer *only* within the provided context above.")
-        prompt_parts.append("3. CRITICAL: Base your entire answer ONLY on the context provided. Do not use external knowledge or assume information not present in the context.")
-        prompt_parts.append("4. If the context contains the answer, provide it clearly and concisely.")
-        prompt_parts.append("5. If the answer is not found in the context, state explicitly that the information is not available in the current loaded specification or artifacts.")
-        prompt_parts.append("6. Remember and subtly remind the user if relevant that I can only analyze the spec and describe workflows/plans; I cannot actually execute API calls.")
-        prompt_parts.append("\nAnswer to user:")
-
-        full_prompt = "\n".join(prompt_parts)
-
-        try:
-            llm_response = llm_call_helper(self.worker_llm, full_prompt)
-            updates['response'] = llm_response.strip()
-            state.update_scratchpad_reason(tool_name, "LLM generated response to general query based on context (no execution).")
-            logger.info("LLM generated response for general OpenAPI query (no execution).")
+def process_schema_completely(self, state: BotState) -> Dict[str, Any]:
+    """
+    Process the loaded OpenAPI schema completely in one go.
+    This includes:
+    1. Creating a detailed schema summary
+    2. Identifying all APIs in the spec
+    3. Generating example payload descriptions
+    4. Creating an execution graph description
+    
+    This creates a comprehensive set of artifacts that can be used for 
+    subsequent queries without additional processing.
+    
+    Returns a dictionary of state updates including {'__next__': next_node_name}.
+    """
+    tool_name = "process_schema_completely"
+    state.update_scratchpad_reason(tool_name, "Starting comprehensive schema processing")
+    logger.info("Executing process_schema_completely node for full schema processing")
+    
+    updates: Dict[str, Any] = {}
+    
+    # Step 1: Generate a detailed schema summary
+    try:
+        # Similar to what would be done in parse_openapi_spec but focusing on the summary generation
+        if not state.openapi_schema:
+            updates['response'] = "No OpenAPI schema is loaded. Please provide a spec first."
             updates['__next__'] = "responder"
-        except Exception as e:
-            updates['response'] = f"I encountered an error while trying to answer your question about the OpenAPI specification: {e}. Please try rephrasing. Remember, I can only describe specs and plans, not execute them."
-            state.update_scratchpad_reason(tool_name, f"LLM call failed: {e}")
-            logger.error(f"Error calling LLM for answer_openapi_query: {e}", exc_info=True)
-            updates['__next__'] = "responder"
-
-        return updates
-
-    # ... (rest of the class and file remain the same) ...
+            state.update_scratchpad_reason(tool_name, "No schema loaded, cannot process.")
+            return updates
+            
+        spec = state.openapi_schema
+        info = spec.get('info', {})
+        title = info.get('title', 'Untitled API')
+        version = info.get('version', 'Unknown')
+        description = info.get('description', 'No description provided')
+        
+        summary_prompt = f"""
+        You are summarizing an OpenAPI specification for later reference. Create a concise but comprehensive summary of the API.
+        
+        API Title: {title}
+        API Version: {version}
+        
+        Description: {description[:1000] + '...' if len(description) > 1000 else description}
+        
+        Include in your summary:
+        1. The overall purpose of this API
+        2. Major resource categories/endpoints
+        3. Any authentication requirements mentioned
+        4. Notable features or patterns in the API design
+        
+        Keep your summary informative but concise (under 1000 words).
+        """
+        
+        schema_summary = llm_call_helper(self.worker_llm, summary_prompt)
+        updates['schema_summary'] = schema_summary
+        state.update_scratchpad_reason(tool_name, "Generated schema summary successfully")
+        logger.info("Schema summary generated")
+        
+        # Step 2: Identify all APIs in the spec
+        paths = spec.get('paths', {})
+        components = spec.get('components', {})
+        
+        # Extract all API operations
+        all_apis = []
+        for path, path_item in paths.items():
+            # Skip parameters at path level
+            for method, operation in path_item.items():
+                if method not in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
+                    continue
+                    
+                operation_id = operation.get('operationId', f"{method}_{path}")
+                summary = operation.get('summary', 'No summary')
+                description = operation.get('description', 'No description')
+                
+                api_item = {
+                    'operationId': operation_id,
+                    'path': path,
+                    'method': method,
+                    'summary': summary,
+                    'description': description
+                }
+                all_apis.append(api_item)
+        
+        updates['identified_apis'] = all_apis
+        state.update_scratchpad_reason(tool_name, f"Identified {len(all_apis)} APIs in spec")
+        logger.info(f"Identified {len(all_apis)} APIs in spec")
+        
+        # Step 3: Generate example payload descriptions for all APIs
+        payload_descriptions = {}
+        
+        # Only process a reasonable number of APIs to avoid excessive LLM calls
+        apis_to_process = all_apis[:30]  # Process up to 30 APIs
+        
+        for api in apis_to_process:
+            operation_id = api['operationId']
+            path = api['path']
+            method = api['method']
+            
+            # Find the operation in the spec
+            operation = paths.get(path, {}).get(method, {})
+            if not operation:
+                continue
+                
+            # Check if it has a request body
+            request_body = operation.get('requestBody', {})
+            parameters = operation.get('parameters', [])
+            
+            # Skip if no request body or parameters
+            if not request_body and not parameters:
+                payload_descriptions[operation_id] = "No request body or parameters required."
+                continue
+                
+            # Generate a description for this API
+            payload_prompt = f"""
+            Generate a clear, natural language description of an example payload for the following API operation.
+            This is NOT for execution but to help users understand how to use the API.
+            
+            Operation ID: {operation_id}
+            Path: {path}
+            Method: {method}
+            Summary: {api['summary']}
+            
+            Parameters: {json.dumps(parameters, indent=2) if parameters else "None"}
+            
+            Request Body Schema: {json.dumps(request_body, indent=2) if request_body else "None"}
+            
+            Provide a description that explains:
+            1. What parameters or body fields are required
+            2. The expected format/type of each field
+            3. A realistic example of values that would work
+            4. Any constraints or validation rules
+            
+            Format your response as a clear description, not actual JSON or code.
+            """
+            
+            try:
+                payload_description = llm_call_helper(self.worker_llm, payload_prompt)
+                payload_descriptions[operation_id] = payload_description
+                logger.debug(f"Generated payload description for {operation_id}")
+            except Exception as e:
+                logger.error(f"Error generating payload description for {operation_id}: {e}")
+                payload_descriptions[operation_id] = f"Error generating description: {str(e)}"
+        
+        updates['payload_descriptions'] = payload_descriptions
+        state.update_scratchpad_reason(tool_name, f"Generated payload descriptions for {len(payload_descriptions)} APIs")
+        logger.info(f"Generated payload descriptions for {len(payload_descriptions)} APIs")
+        
+        # Step 4: Create a basic execution graph description
+        # This creates a simple sample workflow using some of the identified APIs
+        
+        # First, categorize APIs by resource and action type
+        resources = {}
+        for api in all_apis:
+            # Extract resource from path or operationId
+            path_parts = api['path'].strip('/').split('/')
+            resource = path_parts[0] if path_parts else "unknown"
+            
+            if resource not in resources:
+                resources[resource] = []
+            resources[resource].append(api)
+        
+        # Select top resources for the graph (up to 3)
+        top_resources = list(resources.keys())[:3]
+        selected_apis = []
+        for resource in top_resources:
+            selected_apis.extend(resources[resource][:3])  # Up to 3 APIs per resource
+        
+        if not selected_apis:
+            selected_apis = all_apis[:5]  # Fallback: take first 5 APIs
+            
+        # Create nodes from selected APIs
+        nodes = []
+        for i, api in enumerate(selected_apis[:10]):  # Limit to 10 nodes
+            node = Node(
+                operationId=api['operationId'],
+                display_name=f"{api['method'].upper()}_{api['path'].replace('/', '_')}",
+                summary=api['summary'],
+                description=api['description'],
+                payload_description=payload_descriptions.get(api['operationId'], "No payload description generated.")
+            )
+            nodes.append(node)
+        
+        # Create some logical edges based on resource relationships
+        edges = []
+        for i in range(len(nodes) - 1):
+            if i < len(nodes) - 1:
+                # Create some edges based on potential data flow
+                edge = Edge(
+                    from_node=nodes[i].effective_id,
+                    to_node=nodes[i+1].effective_id,
+                    description=f"Potential data flow from {nodes[i].operationId} to {nodes[i+1].operationId}"
+                )
+                edges.append(edge)
+        
+        # Create graph output
+        graph_output = GraphOutput(
+            nodes=nodes,
+            edges=edges,
+            description=f"Sample execution graph showing potential workflow using {len(nodes)} operations from the {title} API."
+        )
+        
+        updates['execution_graph'] = graph_output
+        state.update_scratchpad_reason(tool_name, f"Generated execution graph with {len(nodes)} nodes and {len(edges)} edges")
+        logger.info(f"Generated execution graph with {len(nodes)} nodes and {len(edges)} edges")
+        
+        # Set response to user
+        updates['response'] = f"""
+        I've analyzed your OpenAPI specification for {title} v{version} and prepared the following:
+        
+        1. A comprehensive summary of the API and its capabilities
+        2. Identified {len(all_apis)} API operations across various endpoints
+        3. Generated detailed payload descriptions for {len(payload_descriptions)} operations
+        4. Created a sample execution graph showing how {len(nodes)} operations could be connected in a workflow
+        
+        You can now ask me questions about the API, like "What endpoints are available?", "Explain how to use the user creation API", or "Show me the execution graph".
+        """
+        
+        updates['__next__'] = "responder"
+        state.update_scratchpad_reason(tool_name, "Completed comprehensive schema processing successfully")
+        logger.info("Completed comprehensive schema processing")
+        
+    except Exception as e:
+        error_msg = f"Error processing schema completely: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        updates['response'] = f"I encountered an error while processing your OpenAPI specification: {str(e)}. Please try again or provide more specific instructions."
+        updates['__next__'] = "responder"
+        state.update_scratchpad_reason(tool_name, error_msg)
+    
+    return updates

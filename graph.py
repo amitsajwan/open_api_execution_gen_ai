@@ -75,7 +75,7 @@ def build_graph(router_llm: Any, worker_llm: Any) -> StateGraph:
 
     # Conditional routing from router
     def debug_next(state: BotState) -> str:
-        nxt = state.model_dump().get("__next__", "responder")
+        nxt = wrapped_route(state).get("__next__", "responder")
         logger.info(f"[DebugRouting] Next node: {nxt}")
         return nxt
     builder.add_conditional_edges(

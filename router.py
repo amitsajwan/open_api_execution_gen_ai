@@ -23,6 +23,7 @@ class OpenAPIRouter:
     """
     AVAILABLE_INTENTS = [
         "parse_openapi_spec", # User provides a spec
+        "process_schema_completely", # NEW INTENT: Process the schema completely after parsing
         "plan_execution", # User asks to plan a workflow description
         "identify_apis", # User asks to identify relevant APIs
         "generate_payloads", # User asks to generate payload descriptions
@@ -86,8 +87,16 @@ class OpenAPIRouter:
              updates['input_is_spec'] = True # Set the flag in updates
              # Skip further checks if it looks like a spec
 
+        # --- Special check if we just parsed a spec successfully (to trigger full processing) ---
+        elif previous_intent == "parse_openapi_spec" and state.openapi_schema and not state.schema_summary:
+            logger.info("Router detected newly parsed schema without processing. Routing to process_schema_completely.")
+            state.update_scratchpad_reason("router", "Schema parsed but not processed. Routing to complete processing pipeline.")
+            determined_intent = "process_schema_completely"
+            # Add a response to the user that we're processing their schema
+            updates['response'] = "I've successfully loaded your OpenAPI specification. I'll now analyze it completely to prepare summaries, identify endpoints, generate payload descriptions, and construct an execution graph. This will help me answer your questions more effectively."
+
         # --- Handle state if schema is ALREADY loaded ---
-        if determined_intent is None and state.openapi_schema:
+        elif determined_intent is None and state.openapi_schema:
             logger.debug("Schema exists. Checking specific commands or if input is a query.")
             state.update_scratchpad_reason("router", "Schema exists. Checking for commands/query.")
 
@@ -193,6 +202,11 @@ class OpenAPIRouter:
                     logger.warning(f"Router LLM chose '{determined_intent_llm}' when schema already exists. Overriding to handle_unknown.")
                     determined_intent = "handle_unknown"
                     state.update_scratchpad_reason("router", f"General LLM chose '{determined_intent_llm}' with existing schema. Defaulted to handle_unknown.")
+                # Don't allow LLM to choose process_schema_completely directly
+                elif determined_intent_llm == "process_schema_completely":
+                    logger.warning(f"Router LLM chose '{determined_intent_llm}' which should only be triggered internally. Overriding to handle_unknown.")
+                    determined_intent = "handle_unknown"
+                    state.update_scratchpad_reason("router", f"General LLM chose '{determined_intent_llm}' which is internal only. Defaulted to handle_unknown.")
                 else:
                     determined_intent = determined_intent_llm
                     logger.debug(f"Router LLM determined general intent: {determined_intent}")
@@ -212,7 +226,7 @@ class OpenAPIRouter:
         # --- Apply Loop Detection ---
         final_intent = determined_intent
         # Check if the same valid, non-final intent is repeating
-        if determined_intent == previous_intent and determined_intent not in ["handle_unknown", "handle_loop", "parse_openapi_spec", "responder"]:
+        if determined_intent == previous_intent and determined_intent not in ["handle_unknown", "handle_loop", "parse_openapi_spec", "process_schema_completely", "responder"]:
              loop_counter += 1
              updates['loop_counter'] = loop_counter
              logger.warning(f"Router detected repeated intent: {determined_intent}. Loop counter: {loop_counter}")

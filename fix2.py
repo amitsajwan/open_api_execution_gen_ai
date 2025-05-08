@@ -310,6 +310,7 @@ def initialise_system_node(state: BotState) -> Dict[str, Any]:
 
 
 # === 6. Router ===
+# === 6. Router ===
 def router_node(state: BotState) -> str:
     print(f"\n[Node] router. Initialised: {state.get('initialised')}. Planner Done: {state.get('is_planner_done')}. Feedback: {state.get('feedback',{}).get('message','None')}. Loop: {state.get('loop_counter',0)}/{state.get('max_loops',0)}")
 
@@ -327,4 +328,136 @@ def router_node(state: BotState) -> str:
         print("[Router] Planner is done -> answer_generator_node")
         return "answer_generator_node"
     
-    if st
+    if state.get("loop_counter", 0) > state.get("max_loops", 10) : # Safety break
+        print("[Router] Max loops reached, planner should have error feedback -> answer_generator_node")
+        return "answer_generator_node"
+
+    print("[Router] -> planner_agent_node")
+    return "planner_agent_node"
+
+# === 7. Assemble Graph ===
+# For the fake LLM, we instantiate it here. In a real app, it would be a proper LLM client.
+fake_llm = FakeListChatModel(responses=[]) # Responses will be dynamically set/ignored by fake logic
+
+graph_builder = StateGraph(BotState)
+graph_builder.add_node("initialise_system_node", initialise_system_node)
+# Pass the (fake) LLM to the nodes that need it.
+graph_builder.add_node("planner_agent_node", lambda s: planner_agent_node(s, fake_llm))
+graph_builder.add_node("system_tool_executor", system_tool_executor)
+graph_builder.add_node("answer_generator_node", lambda s: answer_generator_node(s, fake_llm))
+
+graph_builder.add_edge(START, "initialise_system_node")
+
+routing_map = {
+    "initialise_system_node": "initialise_system_node",
+    "planner_agent_node": "planner_agent_node",
+    "system_tool_executor": "system_tool_executor",
+    "answer_generator_node": "answer_generator_node",
+    END: END # Ensure END is a valid destination if router logic points to it
+}
+graph_builder.add_conditional_edges("initialise_system_node", router_node, routing_map)
+graph_builder.add_conditional_edges("planner_agent_node", router_node, routing_map)
+graph_builder.add_conditional_edges("system_tool_executor", router_node, routing_map)
+# Answer generator is typically a terminal node for a given query flow
+graph_builder.add_edge("answer_generator_node", END)
+
+
+compiled_graph = graph_builder.compile().with_config(patch_config(None, recursion_limit=150)) # Increased recursion limit
+
+# === 8. FastAPI WS stub ===
+app = FastAPI()
+
+@app.websocket("/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    session_id = websocket.headers.get("sec-websocket-key", "default_session")
+    print(f"\n[WebSocket ({session_id})] New connection.")
+
+    # Initial state for a new session
+    current_session_state_template: BotState = {
+        "messages": [],
+        "openapi_spec": "<VALID_SPEC>", # Start with a valid spec for the LLM to init
+        "api_details": {}, "execution_graph": {},
+        "plan_description": None, "final_response": "",
+        "is_planner_done": False, "feedback": {},
+        "loop_counter": 0, "max_loops": 7, # Max 7 agent loops for this example
+        "initialised": False
+    }
+    
+    print(f"[WebSocket ({session_id})] Kicking off initial graph processing...")
+    # The first invocation uses the template state. The graph starts from START.
+    # LangGraph manages state per thread_id (session_id here).
+    async for event_part in compiled_graph.astream(
+        current_session_state_template, # This sets the initial state for the session
+        config={"configurable": {"thread_id": session_id}}
+    ):
+        print(f"[WebSocket ({session_id}) Initial Stream] Node: {list(event_part.keys())[0]}, Data: {list(event_part.values())[0]}")
+        # We don't need to manually update current_session_state here if using thread_id for persistence.
+        # The `ainvoke(None, ...)` call later will retrieve the latest state for that thread_id.
+        pass
+
+    # Get the state after initial processing (which should run init_system and then planner_agent)
+    current_session_state = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
+    print(f"[WebSocket ({session_id})] State after initial graph run: Feedback='{current_session_state.get('feedback',{}).get('message','None')}', Initialised={current_session_state.get('initialised')}, PlannerDone={current_session_state.get('is_planner_done')}")
+
+    # Send initial message if any (e.g., if LLM planner already decided to respond)
+    if current_session_state.get("final_response"):
+        await websocket.send_text(f"Initial: {current_session_state['final_response']}")
+    elif current_session_state.get("feedback") and current_session_state["feedback"].get("type") == "error":
+        fb = current_session_state["feedback"]
+        await websocket.send_text(f"Initialization Info: {fb.get('message')}. Suggestion: {fb.get('details',{}).get('suggestion','')}")
+    elif current_session_state.get("initialised"):
+         await websocket.send_text("System initialized. How can I help you with the API graph today?")
+
+
+    try:
+        while True:
+            text = await websocket.receive_text()
+            print(f"\n[WebSocket ({session_id})] Received text: {text}")
+            
+            turn_input = {"messages": [HumanMessage(content=text)]}
+            
+            async for event_part in compiled_graph.astream(
+                turn_input, # Input for the current turn
+                config={"configurable": {"thread_id": session_id}} # Persist state for this session
+            ):
+                print(f"[WebSocket ({session_id}) Stream] Node: {list(event_part.keys())[0]}, Data: {list(event_part.values())[0]}")
+                # Optionally send intermediate updates/thoughts to client here
+                pass 
+
+            current_session_state = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
+            print(f"[WebSocket ({session_id})] State after turn: Feedback='{current_session_state.get('feedback',{}).get('message','None')}', Loop={current_session_state.get('loop_counter')}, PlannerDone={current_session_state.get('is_planner_done')}")
+
+            if current_session_state.get("final_response"):
+                await websocket.send_text(current_session_state["final_response"])
+                # Potentially reset parts of state for next query, or let LLM handle context.
+                # current_session_state["final_response"] = "" # Clear after sending if graph doesn't do it.
+            elif not current_session_state.get("is_planner_done"):
+                 await websocket.send_text(f"Processing '{text}'... (LLM Planner is working, loop {current_session_state.get('loop_counter')})")
+            elif current_session_state.get("feedback") and current_session_state["feedback"].get("type") == "error":
+                fb = current_session_state["feedback"]
+                await websocket.send_text(f"Error: {fb.get('message')}. Suggestion: {fb.get('details',{}).get('suggestion','')}")
+            else: # Should ideally always have a final_response if planner is_done
+                 await websocket.send_text(f"Processing of '{text}' complete. Waiting for next instruction or final summary if applicable.")
+
+
+    except WebSocketDisconnect:
+        print(f"[WebSocket ({session_id})] Client disconnected.")
+    except Exception as e:
+        print(f"[WebSocket ({session_id})] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        await websocket.close(code=1011, reason=f"Internal server error: {str(e)[:100]}")
+    finally:
+        print(f"[WebSocket ({session_id})] Connection closed.")
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Starting FastAPI server on http://0.0.0.0:8000/ws")
+    print("This version uses a FakeListChatModel to simulate LLM responses.")
+    print("The LLM planner will attempt to initialize the graph using tools based on the hardcoded 'openapi_spec'.")
+    print("Try sending messages like 'generate payload for /users' after initialization.")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+Continue with Gemini Advanced
+You've reached your limit on 2.5 Pro (experimental) until May 9, 8:08 am. Try Gemini Advanced for higher limits.
+

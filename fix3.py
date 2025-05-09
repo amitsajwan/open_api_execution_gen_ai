@@ -333,6 +333,7 @@ compiled_graph = graph_builder.compile().with_config(patch_config(None, recursio
 
 
 # === 8. FastAPI WS stub ===
+# === 8. FastAPI WS stub ===
 app = FastAPI()
 
 @app.websocket("/ws")
@@ -355,4 +356,78 @@ async def ws_endpoint(websocket: WebSocket):
     }
     
     print(f"[WebSocket ({session_id})] Kicking off with spec: {initial_spec}")
-    # The first i
+    # The first invoke sets up the state for the session via thread_id
+    # No specific input needed for the first run if graph starts from a parameterless node
+    # and initial_state_template provides all necessary fields.
+    
+    # The graph starts with initialise_system. It doesn't need external input.
+    # Then it goes to planner_agent_node. Planner needs messages.
+    # Let's send an initial "start" message.
+    initial_input_for_graph = {"messages": [HumanMessage(content=f"Let's start with spec: {initial_spec}")]}
+    current_session_state = initial_state_template.copy()
+    current_session_state["messages"] = initial_input_for_graph["messages"]
+
+
+    # Run the graph until a final response or error
+    full_event_stream = []
+    async for event_chunk in compiled_graph.astream(
+        current_session_state, # Pass the initial state merged with first message
+        config={"configurable": {"thread_id": session_id}}
+    ):
+        print(f"[WebSocket ({session_id}) Stream] Node: {list(event_chunk.keys())[0]}")
+        full_event_stream.append(event_chunk)
+        # You could send partial updates to the client here if desired
+
+    # Get the final state
+    final_state = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
+    
+    print(f"\n[WebSocket ({session_id})] Initial processing complete. Final state achieved.")
+    print(f"  Final API Details: {'Present' if final_state.get('api_details') else 'Missing'}")
+    print(f"  Final Graph: {'Present' if final_state.get('execution_graph') else 'Missing'}")
+    print(f"  Final Feedback: {final_state.get('feedback')}")
+    print(f"  Final Response: {final_state.get('final_response')}")
+
+    if final_state.get("final_response"):
+        await websocket.send_text(final_state["final_response"])
+    else:
+        await websocket.send_text("Initial processing complete, but no final response generated. Check logs.")
+
+    try:
+        # Simplified: This skeleton primarily demonstrates the initial auto-run.
+        # A full conversational loop would be more complex here.
+        # For now, we'll just keep the connection open.
+        while True:
+            text = await websocket.receive_text() # Wait for further messages
+            await websocket.send_text(f"Received your message: '{text}'. Conversational follow-up not fully implemented in this skeleton's WebSocket handler after initial run.")
+            # To make it conversational, you'd re-invoke the graph with new HumanMessage:
+            # turn_input = {"messages": [HumanMessage(content=text)]}
+            # async for event_chunk in compiled_graph.astream(turn_input, config={"configurable": {"thread_id": session_id}}): ...
+            # final_state_after_turn = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
+            # await websocket.send_text(final_state_after_turn.get("final_response", "Continuation response..."))
+
+
+    except WebSocketDisconnect:
+        print(f"[WebSocket ({session_id})] Client disconnected.")
+    except Exception as e:
+        print(f"[WebSocket ({session_id})] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        await websocket.close(code=1011, reason=f"Internal server error: {str(e)[:100]}")
+    finally:
+        print(f"[WebSocket ({session_id})] Connection closed.")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Starting FastAPI server on http://0.0.0.0:8000/ws")
+    print("This version uses a FakeListChatModel to simulate LLM responses and dummy tools.")
+    print("The graph will attempt an initial auto-run based on the 'openapi_spec' in initial_state_template.")
+    print("Observe the console logs for node execution and state changes.")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+

@@ -6,12 +6,11 @@ from langchain_core.messages import (
     BaseMessage, AIMessage, ToolMessage, HumanMessage, SystemMessage
 )
 from langgraph.graph.message import add_messages
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.graph import StateGraph, START, END # Ensure END is imported
+from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
-from langchain_community.chat_models.fake import FakeListChatModel # For runnable example
+from langchain_community.chat_models.fake import FakeListChatModel
 from langchain_core.runnables import RunnableConfig
-
 
 # Helper for patch_config (remains the same)
 def patch_config(config: Optional[RunnableConfig], **kwargs):
@@ -26,404 +25,318 @@ def patch_config(config: Optional[RunnableConfig], **kwargs):
 class BotState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     openapi_spec: str
-    api_details: Optional[Dict[str, Any]] # Populated by identify_apis
-    execution_graph: Optional[Dict[str, Any]] # Populated by build_exec_graph
-    # Example: a field for generated payload
-    generated_payload_data: Optional[Dict[str, Any]]
-
-    is_planner_done: bool # Flag for planner to signal completion
-    feedback: Dict[str, Any] # For cycle checks or other tool feedback
+    api_details: Optional[Dict[str, Any]]
+    execution_graph: Optional[Dict[str, Any]]
+    cycle_check_feedback: Optional[Dict[str, Any]]
+    generated_payload: Optional[Dict[str, Any]]
+    is_planner_done: bool
     final_response: str
-
-    # Control flow
     loop_counter: int
     max_loops: int
-    initialised: bool # System init flag
+    initialised: bool
+    current_feedback: Optional[Dict[str, Any]]
 
 # === 2. Dummy Tools defined with @tool ===
 @tool("identify_apis_tool", description="Extracts API details from an OpenAPI spec.")
 def identify_apis_tool(openapi_spec: str) -> Dict[str, Any]:
-    """Dummy: Returns predefined API details based on spec content."""
-    print(f"[Tool Called] identify_apis_tool with spec: '{openapi_spec[:30]}...'")
+    print(f"[Tool Executed] identify_apis_tool (spec: '{openapi_spec[:20]}...')")
+    if "valid_spec" in openapi_spec:
+        return {"identified_api_details": {"data": "Valid APIs identified", "endpoints_count": 2, "spec_used": openapi_spec}}
     if "cycle_spec" in openapi_spec:
-        return {"api_details": {"data": "APIs with a potential cycle structure", "spec_type": "cycle"}}
-    elif "valid_spec" in openapi_spec:
-        return {"api_details": {"data": "Standard set of APIs", "endpoints": ["/users", "/orders"], "spec_type": "valid"}}
-    return {"api_details": None, "error": "Unknown spec for identify_apis_tool"}
+        return {"identified_api_details": {"data": "Cycle-prone APIs identified", "spec_used": openapi_spec}}
+    return {"error": "Unknown spec for identify_apis_tool", "identified_api_details": None}
 
 @tool("build_execution_graph_tool", description="Builds an API execution graph from API details.")
-def build_execution_graph_tool(api_details: Dict[str, Any]) -> Dict[str, Any]:
-    """Dummy: Returns a graph structure based on api_details."""
-    print(f"[Tool Called] build_execution_graph_tool with details: '{api_details.get('spec_type', 'N/A')}'")
-    if not api_details or api_details.get("data") is None:
-        return {"execution_graph": None, "error": "Missing api_details for graph building"}
-    if api_details.get("spec_type") == "cycle":
-        return {"execution_graph": {"nodes": ["A->B", "B->A"], "is_cyclic": True}}
-    return {"execution_graph": {"nodes": ["UserAPI", "OrderAPI"], "dependencies": {"OrderAPI": "UserAPI"}, "is_cyclic": False}}
+def build_execution_graph_tool(current_api_details: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    print(f"[Tool Executed] build_execution_graph_tool (API details: {'Present' if current_api_details else 'Missing'})")
+    if not current_api_details or current_api_details.get("data") is None: # Check for None or empty
+        return {"built_execution_graph": None, "error": "Missing or invalid api_details for graph building"}
+    if "Cycle-prone" in current_api_details.get("data", ""):
+        return {"built_execution_graph": {"nodes": ["A", "B"], "edges": ["A->B", "B->A"], "is_cyclic_structure": True}}
+    return {"built_execution_graph": {"nodes": ["Users", "Orders"], "edges": ["Users->Orders"], "is_cyclic_structure": False}}
 
 @tool("check_graph_cycles_tool", description="Checks the execution graph for cycles.")
-def check_graph_cycles_tool(execution_graph: Dict[str, Any]) -> Dict[str, Any]:
-    """Dummy: Returns feedback based on the 'is_cyclic' flag in the graph."""
-    print(f"[Tool Called] check_graph_cycles_tool")
-    if not execution_graph:
-        return {"feedback": {"has_cycle": False, "message": "Graph not available for cycle check."}}
-    if execution_graph.get("is_cyclic"):
-        return {"feedback": {"has_cycle": True, "message": "Cycle detected in the graph by dummy tool!", "suggestion": "Review dependencies."}}
-    return {"feedback": {"has_cycle": False, "message": "No cycles found by dummy tool."}}
+def check_graph_cycles_tool(current_execution_graph: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    print(f"[Tool Executed] check_graph_cycles_tool (Graph: {'Present' if current_execution_graph else 'Missing'})")
+    if not current_execution_graph:
+        return {"graph_cycle_feedback": {"has_cycle": False, "message": "Graph not available for cycle check."}}
+    if current_execution_graph.get("is_cyclic_structure"):
+        return {"graph_cycle_feedback": {"has_cycle": True, "message": "Cycle detected in graph by tool!", "suggestion": "Review dependencies."}}
+    return {"graph_cycle_feedback": {"has_cycle": False, "message": "No cycles found."}}
 
-@tool("generate_api_payload_tool", description="Generates a sample payload for a given API endpoint.")
-def generate_api_payload_tool(endpoint_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
-    """Dummy: Returns a generic payload."""
-    print(f"[Tool Called] generate_api_payload_tool for endpoint: '{endpoint_name}' with params: {parameters}")
-    return {"generated_payload_data": {"endpoint": endpoint_name, "payload": {"sampleValue": 123, "params_received": parameters}}}
+@tool("generate_api_payload_tool", description="Generates a sample payload for an API endpoint.")
+def generate_api_payload_tool(endpoint_name: str) -> Dict[str, Any]:
+    print(f"[Tool Executed] generate_api_payload_tool for endpoint: '{endpoint_name}'")
+    return {"newly_generated_payload": {"for_endpoint": endpoint_name, "payload": {"id": 1, "data": "sample"}}}
 
-# ToolNode that will execute the LLM's chosen tools
-# The output of these tools should be dictionaries that can update BotState directly.
-# LangGraph's ToolNode by default appends ToolMessages. To update state directly from tool output,
-# tools should return dicts with keys matching BotState fields.
-# The @tool decorator and ToolNode handle this well if tool outputs match state keys.
-# If not, we'd need a custom node to map tool outputs to state.
-# For simplicity, let's assume tools return dicts that can update relevant BotState fields
-# e.g. identify_apis_tool returns {"api_details": ...}
-# ToolNode will then produce ToolMessages. The crucial part is how these ToolMessages update the overall state.
-# The `add_messages` reducer handles the messages list. For other state fields,
-# if the tools return dicts with keys matching BotState fields, and if ToolNode is used in a way
-# that its output directly updates the state (e.g. if the graph node returns tool_results),
-# then state can be updated.
-# With ToolNode, the primary output is adding ToolMessages.
-# To update state like `api_details` from a tool, often the planner LLM needs to see the ToolMessage
-# and then potentially call another tool to explicitly update state, or the graph structure ensures this.
-
-# Let's make the tools return values directly, and the ToolNode will wrap them in ToolMessages.
-# The PlannerAgentLLM will then "see" these ToolMessages in the history.
-# If direct state update is desired from tools, this would typically be handled by how the
-# `ToolNode().invoke(state)` output is merged back into the main state dictionary.
-# For this skeleton, we'll rely on the LLM seeing tool outputs in messages.
-# And for key structured data like `api_details`, `execution_graph`, we'll have the
-# Planner LLM explicitly call tools and then "know" these fields *should* be updated
-# based on successful tool execution. The dummy tools will return dicts, and we can
-# simulate that these update the state for the *next* LLM turn.
-
-# To ensure state fields like `api_details` are updated:
-# We need a mechanism after ToolNode runs to explicitly take parts of ToolMessage content
-# and put them into the correct state fields.
-# Or, the tools themselves are not directly updating state fields, but their JSON output
-# is parsed by the LLM.
-
-# Let's simplify: The tools will return the data. The planner LLM will be "told" via prompt
-# that successful tool execution implies certain state fields are now populated.
-# The dummy tools will print, showing they were called.
-
-# List of all tools for the ToolNode
-available_tools = [
-    identify_apis_tool, build_execution_graph_tool,
-    check_graph_cycles_tool, generate_api_payload_tool
-]
+available_tools = [identify_apis_tool, build_execution_graph_tool, check_graph_cycles_tool, generate_api_payload_tool]
 tool_executor = ToolNode(available_tools)
 
 # === 3. LLM Instances (FakeLLM) ===
-# Responses will be crafted to simulate a basic planning flow.
-# Order of responses matters for FakeListChatModel
-llm_responses_for_planner = [
-    AIMessage(content="Okay, I need to understand the APIs first.", tool_calls=[{"name": "identify_apis_tool", "args": {"openapi_spec": "valid_spec"}, "id": "call_identify"}]),
-    AIMessage(content="Now that I have API details, I'll build the execution graph.", tool_calls=[{"name": "build_execution_graph_tool", "args": {"api_details": {"data": "Standard set of APIs", "endpoints": ["/users", "/orders"], "spec_type": "valid"}}, "id": "call_buildgraph"}]), # LLM "sees" output from previous tool to form args
-    AIMessage(content="Graph built. Let's check for cycles.", tool_calls=[{"name": "check_graph_cycles_tool", "args": {"execution_graph": {"nodes": ["UserAPI", "OrderAPI"], "is_cyclic": False}}, "id": "call_checkcycle"}]),
-    AIMessage(content="Graph is clean. User wants a payload for /users.", tool_calls=[{"name": "generate_api_payload_tool", "args": {"endpoint_name": "/users", "parameters": {"userId": "123"}}, "id": "call_genpayload"}]),
-    AIMessage(content="All actions taken. Ready to respond."), # Signals planner is done
-]
-# For a cycle scenario
-llm_responses_for_cycle_planner = [
-    AIMessage(content="Okay, I need to understand the APIs first (cycle spec).", tool_calls=[{"name": "identify_apis_tool", "args": {"openapi_spec": "cycle_spec"}, "id": "call_identify_cycle"}]),
-    AIMessage(content="Now that I have API details (cycle spec), I'll build the execution graph.", tool_calls=[{"name": "build_execution_graph_tool", "args": {"api_details": {"data": "APIs with a potential cycle structure", "spec_type": "cycle"}}, "id": "call_buildgraph_cycle"}]),
-    AIMessage(content="Graph built (cycle spec). Let's check for cycles.", tool_calls=[{"name": "check_graph_cycles_tool", "args": {"execution_graph": {"nodes": ["A->B", "B->A"], "is_cyclic": True}}, "id": "call_checkcycle_cycle"}]),
-    AIMessage(content="Cycle detected in graph! I cannot proceed further with planning normal operations."), # Signals planner is done due to error
-]
+def create_fake_planner_responses(spec_type: str) -> List[AIMessage]:
+    if spec_type == "cycle_spec":
+        return [
+            AIMessage(content="", tool_calls=[{"name": "identify_apis_tool", "args": {"openapi_spec": "cycle_spec"}, "id": "tc1_cycle"}]),
+            AIMessage(content="", tool_calls=[{"name": "build_execution_graph_tool", "args": {"current_api_details": {"data": "Cycle-prone APIs identified", "spec_used": "cycle_spec"}}, "id": "tc2_cycle"}]),
+            AIMessage(content="", tool_calls=[{"name": "check_graph_cycles_tool", "args": {"current_execution_graph": {"is_cyclic_structure": True}}, "id": "tc3_cycle"}]),
+            AIMessage(content="PLANNING_COMPLETE_WITH_ERROR") # Cycle detected, planner stops
+        ]
+    # Default to valid_spec flow
+    return [
+        AIMessage(content="", tool_calls=[{"name": "identify_apis_tool", "args": {"openapi_spec": "valid_spec"}, "id": "tc1_valid"}]),
+        AIMessage(content="", tool_calls=[{"name": "build_execution_graph_tool", "args": {"current_api_details": {"data": "Valid APIs identified", "spec_used": "valid_spec"}}, "id": "tc2_valid"}]),
+        AIMessage(content="", tool_calls=[{"name": "check_graph_cycles_tool", "args": {"current_execution_graph": {"is_cyclic_structure": False}}, "id": "tc3_valid"}]),
+        AIMessage(content="User wants payload for /users.", tool_calls=[{"name": "generate_api_payload_tool", "args": {"endpoint_name": "/users"}, "id": "tc4_valid"}]),
+        AIMessage(content="PLANNING_COMPLETE")
+    ]
 
-# We'll select which response list to use based on initial spec for demo
-planner_llm = FakeListChatModel(responses=[]) # Will be populated based on scenario
-
-responder_llm_response = AIMessage(content="Here is the information you requested, incorporating all tool actions and checks.")
-responder_llm = FakeListChatModel(responses=[responder_llm_response])
-
+planner_llm = FakeListChatModel(responses=[])
+responder_llm = FakeListChatModel(responses=[AIMessage(content="Based on the actions, here is your summary.")])
 
 # === 4. LLM-Powered Nodes ===
-def create_llm_messages(state: BotState, system_prompt_content: str) -> List[BaseMessage]:
-    """Helper to create message list for LLM call."""
-    messages = [SystemMessage(content=system_prompt_content)]
-    # Filter messages to provide a clean history for the LLM
-    history = []
-    for msg in state["messages"]:
-        if isinstance(msg, AIMessage) and msg.content == "Thinking...": # Skip placeholder
-            continue
-        history.append(msg)
-    messages.extend(history)
-
-    if state.get("feedback") and state["feedback"].get("message"):
-        messages.append(SystemMessage(content=f"SYSTEM_FEEDBACK: {json.dumps(state['feedback'])}"))
-    return messages
+def create_llm_messages_for_planner(state: BotState) -> List[BaseMessage]:
+    # (Content remains largely the same as before, ensures system prompt and relevant history)
+    system_prompt = (
+        "You are an AI planner. Your goal is to use tools to prepare for the user's request. "
+        "Available tools: identify_apis_tool, build_execution_graph_tool, check_graph_cycles_tool, generate_api_payload_tool.\n"
+        "Sequence: identify_apis -> build_execution_graph -> check_graph_cycles. Then handle user requests.\n"
+        "If setup complete & request addressed, or critical error (like cycle), respond 'PLANNING_COMPLETE' or 'PLANNING_COMPLETE_WITH_ERROR'. Else, call next tool.\n"
+        f"Spec: {state.get('openapi_spec')}, API Details: {bool(state.get('api_details'))}, Graph: {bool(state.get('execution_graph'))}, Cycle FB: {state.get('cycle_check_feedback')}, Gen FB: {state.get('current_feedback')}"
+    )
+    history = [msg for msg in state["messages"] if not (isinstance(msg, AIMessage) and msg.content == "")]
+    return [SystemMessage(content=system_prompt)] + history
 
 def planner_agent_node(state: BotState) -> Dict[str, Any]:
-    """LLM-driven planner node."""
-    print(f"\n[Node] PlannerAgentNode | Loop: {state['loop_counter']} | Initialised: {state['initialised']}")
-    print(f"  State Preview: API Details: {'Present' if state.get('api_details') else 'Missing'}, Graph: {'Present' if state.get('execution_graph') else 'Missing'}")
-    print(f"  Feedback: {state.get('feedback')}")
+    print(f"\n[Node] PlannerAgentNode | Loop: {state['loop_counter']+1}/{state['max_loops']}")
+    print(f"  State In: api_details: {bool(state.get('api_details'))}, exec_graph: {bool(state.get('execution_graph'))}, cycle_fb: {bool(state.get('cycle_check_feedback'))}")
 
     if state["loop_counter"] >= state["max_loops"]:
-        print("  Max loops reached. Forcing planner to be done.")
-        return {"is_planner_done": True, "feedback": {"type": "error", "message": "Max loops reached."}}
+        print("  Max loops reached. Forcing planner to complete with error feedback.")
+        return {
+            "messages": [AIMessage(content="Max loops reached during planning.")], # Add a message for context
+            "is_planner_done": True,
+            "current_feedback": {"type": "error", "message": "Max loops reached by planner."}
+        }
 
-    system_prompt = (
-        "You are a meticulous AI planner. Your job is to use available tools to gather information "
-        "and prepare for fulfilling the user's request. "
-        "Available tools: identify_apis_tool, build_execution_graph_tool, check_graph_cycles_tool, generate_api_payload_tool.\n"
-        "Process to follow generally:\n"
-        "1. If API details are missing, call identify_apis_tool.\n"
-        "2. If execution graph is missing, call build_execution_graph_tool (needs API details from step 1).\n"
-        "3. If graph exists, call check_graph_cycles_tool.\n"
-        "4. Based on user query and available graph, call other tools like generate_api_payload_tool if needed.\n"
-        "5. If a cycle is detected or a critical error occurs, note it and conclude planning.\n"
-        "If you believe all necessary information is gathered and preparatory actions are complete, respond with just the content 'PLANNING_COMPLETE'. "
-        "Otherwise, make the next appropriate tool call."
-        f"Current openapi_spec in state: {state.get('openapi_spec')}"
-    )
-    messages = create_llm_messages(state, system_prompt)
+    messages_for_llm = create_llm_messages_for_planner(state)
+    ai_response = planner_llm.invoke(messages_for_llm) # FakeListChatModel pops
+    print(f"  LLM Raw Response: content='{ai_response.content}', tool_calls={ai_response.tool_calls}")
 
-    # Simulate LLM call
-    print(f"  LLM Input Messages (last 2): {messages[-2:]}")
-    ai_response = planner_llm.invoke(messages) # FakeListChatModel pops from its list
-    print(f"  LLM Raw Response: {ai_response}")
-
-    is_done = ai_response.content == "PLANNING_COMPLETE" or not ai_response.tool_calls
-
-    # Manual state updates based on dummy tool "outputs" for next LLM turn
-    # This simulates the effect of ToolMessages being processed and state being updated.
-    # In a real complex system, this logic would be more robust or an explicit state mapping node.
-    updated_state_from_tools = {}
-    if state["messages"]:
-        last_message = state["messages"][-1]
-        if isinstance(last_message, ToolMessage):
-            tool_name = available_tools[[t.name for t in available_tools].index(last_message.name)].name # Get the actual tool name
-            # Dummy tool output parsing logic
-            try:
-                tool_output = json.loads(last_message.content) # Assuming tools return JSON strings
-                if tool_name == "identify_apis_tool":
-                    updated_state_from_tools["api_details"] = tool_output.get("api_details")
-                elif tool_name == "build_execution_graph_tool":
-                    updated_state_from_tools["execution_graph"] = tool_output.get("execution_graph")
-                elif tool_name == "check_graph_cycles_tool":
-                    updated_state_from_tools["feedback"] = tool_output.get("feedback", state.get("feedback"))
-                elif tool_name == "generate_api_payload_tool":
-                    updated_state_from_tools["generated_payload_data"] = tool_output.get("generated_payload_data")
-            except json.JSONDecodeError:
-                print(f"Warning: Could not parse JSON from tool output: {last_message.content}")
+    # Determine if planner is done based on LLM response content or lack of tool calls
+    planner_finished_signal = "PLANNING_COMPLETE" in ai_response.content # Includes _WITH_ERROR
+    is_done_by_llm = planner_finished_signal or not (hasattr(ai_response, 'tool_calls') and ai_response.tool_calls)
 
 
-    print(f"  Planner Decision: IsDone={is_done}, ToolCalls={ai_response.tool_calls}")
+    updates_from_last_tool_run: Dict[str, Any] = {}
+    last_message = state["messages"][-1] if state["messages"] else None
+    if isinstance(last_message, ToolMessage):
+        print(f"  Processing ToolMessage: id={last_message.tool_call_id}, name={last_message.name}, content='{last_message.content[:100]}...'")
+        try:
+            tool_output_data = json.loads(last_message.content)
+            if last_message.name == "identify_apis_tool":
+                updates_from_last_tool_run["api_details"] = tool_output_data.get("identified_api_details")
+                if tool_output_data.get("error"): updates_from_last_tool_run["current_feedback"] = {"type": "error", "message": tool_output_data.get("error")}
+            elif last_message.name == "build_execution_graph_tool":
+                updates_from_last_tool_run["execution_graph"] = tool_output_data.get("built_execution_graph")
+                if tool_output_data.get("error"): updates_from_last_tool_run["current_feedback"] = {"type": "error", "message": tool_output_data.get("error")}
+            elif last_message.name == "check_graph_cycles_tool":
+                cycle_fb = tool_output_data.get("graph_cycle_feedback")
+                updates_from_last_tool_run["cycle_check_feedback"] = cycle_fb
+                if cycle_fb and cycle_fb.get("has_cycle"):
+                    updates_from_last_tool_run["current_feedback"] = {"type": "error", "message": cycle_fb.get("message", "Cycle detected!"), "from_tool": "check_graph_cycles_tool"}
+                    # If cycle detected, LLM should have said PLANNING_COMPLETE_WITH_ERROR, making is_done_by_llm true.
+            elif last_message.name == "generate_api_payload_tool":
+                updates_from_last_tool_run["generated_payload"] = tool_output_data.get("newly_generated_payload")
+        except json.JSONDecodeError: print(f"  Warning: Could not parse JSON from ToolMessage content: {last_message.content}")
+        except Exception as e: print(f"  Error processing ToolMessage: {e}")
+    
+    # If feedback indicates a critical error, ensure planner stops
+    final_is_done = is_done_by_llm or (updates_from_last_tool_run.get("current_feedback", {}).get("type") == "error")
+
+    print(f"  Planner Decision: is_done_by_llm={is_done_by_llm}, final_is_done={final_is_done}. Updates from tools: {list(updates_from_last_tool_run.keys())}")
     return {
-        "messages": [ai_response],
-        "is_planner_done": is_done,
+        "messages": [ai_response], "is_planner_done": final_is_done,
         "loop_counter": state["loop_counter"] + 1,
-        **updated_state_from_tools # Apply updates from "parsed" tool outputs
+        **updates_from_last_tool_run
     }
 
 def answer_generator_node(state: BotState) -> Dict[str, Any]:
-    """LLM-driven responder node."""
+    # (Content largely same as before, creates a summary response)
     print("\n[Node] AnswerGeneratorNode")
-    print(f"  Final State Preview: API Details: {'Present' if state.get('api_details') else 'Missing'}, Graph: {'Present' if state.get('execution_graph') else 'Missing'}")
-    print(f"  Feedback: {state.get('feedback')}")
-    print(f"  Generated Payload: {state.get('generated_payload_data')}")
+    print(f"  Final State: api_details: {bool(state.get('api_details'))}, exec_graph: {bool(state.get('execution_graph'))}, cycle_fb: {state.get('cycle_check_feedback')}, gen_payload: {state.get('generated_payload')}")
+    print(f"  Final Current Feedback: {state.get('current_feedback')}")
 
-    system_prompt = (
-        "You are a helpful AI assistant. Summarize the actions taken (from message history) and "
-        "provide a response to the user. If there were errors (see feedback or tool messages), explain them."
-    )
-    messages = create_llm_messages(state, system_prompt)
+    summary_parts = ["Summary of operations:"]
+    if state.get("current_feedback"): summary_parts.append(f"Feedback: {state['current_feedback']['message']}")
+    if state.get("api_details"): summary_parts.append(f"API Details: {state['api_details'].get('data', 'Not available')}")
+    if state.get("execution_graph"): summary_parts.append(f"Graph: {state['execution_graph'].get('nodes', 'Not available')}")
+    if state.get("cycle_check_feedback"): summary_parts.append(f"Cycle Check: {state['cycle_check_feedback'].get('message', 'Not available')}")
+    if state.get("generated_payload"): summary_parts.append(f"Generated Payload: {state['generated_payload'].get('for_endpoint', 'N/A')}")
+    
+    final_response_str = "\n".join(summary_parts) + "\nEnd of operation."
+    # Simulate LLM creating this from messages or state
+    # final_response_str = responder_llm.invoke(state['messages']).content
 
-    # Simulate LLM call
-    ai_response = responder_llm.invoke(messages)
-    print(f"  Responder LLM Output: {ai_response.content}")
-
-    return {"final_response": ai_response.content, "messages": [ai_response]}
+    print(f"  Generated Final Response: {final_response_str}")
+    return {"final_response": final_response_str, "messages": [AIMessage(content=final_response_str)]}
 
 # === 5. System Initialisation Node ===
 def initialise_system_node(state: BotState) -> Dict[str, Any]:
     print("\n[Node] initialise_system_node")
-    # Select LLM response list based on spec for demo
     global planner_llm # pylint: disable=global-statement
-    if state.get("openapi_spec") == "cycle_spec":
-        planner_llm = FakeListChatModel(responses=llm_responses_for_cycle_planner.copy())
-    else: # Default to valid spec flow
-        planner_llm = FakeListChatModel(responses=llm_responses_for_planner.copy())
-
+    spec_to_use = state.get("openapi_spec", "valid_spec")
+    planner_llm = FakeListChatModel(responses=create_fake_planner_responses(spec_to_use))
+    print(f"  Initialised planner_llm with {len(planner_llm.responses)} responses for spec: {spec_to_use}")
     return {
-        "initialised": True,
-        "feedback": {},
-        "is_planner_done": False,
-        "loop_counter": 0,
-        "max_loops": state.get("max_loops", 7), # Default max loops
-        "api_details": None, # Ensure these are reset for each run
-        "execution_graph": None,
-        "generated_payload_data": None,
+        "initialised": True, "api_details": None, "execution_graph": None,
+        "cycle_check_feedback": None, "generated_payload": None, "current_feedback": None,
+        "is_planner_done": False, "loop_counter": 0,
+        "max_loops": state.get("max_loops", 6),
+        "messages": state.get("messages", [])
     }
 
 # === 6. Router Logic ===
-def should_continue_planning(state: BotState) -> str:
-    print(f"\n[Router] should_continue_planning? PlannerDone: {state.get('is_planner_done')}, Loop: {state.get('loop_counter')}/{state.get('max_loops')}")
+def route_after_planner(state: BotState) -> str:
+    """Determines the next step after the planner_agent_node."""
+    print(f"\n[Router] route_after_planner | PlannerDone: {state.get('is_planner_done')}, Loop: {state.get('loop_counter')}/{state.get('max_loops')}")
+    
+    # Priority 1: If planner explicitly signals it's done or an error has occurred.
     if state.get("is_planner_done"):
-        print("  Decision: Planner is done -> Generate Answer")
+        print("  Route decision: Planner is done -> answer_generator_node")
         return "answer_generator_node"
-    if state.get("loop_counter", 0) >= state.get("max_loops", 7):
-        print("  Decision: Max loops reached -> Generate Answer (with potential error state)")
-        return "answer_generator_node" # Force to answer if stuck in loop
+        
+    # Priority 2: If max loops reached.
+    if state.get("loop_counter", 0) >= state.get("max_loops", 6):
+        print("  Route decision: Max loops reached -> answer_generator_node")
+        # Ensure current_feedback reflects this if not already set by planner
+        # This path should ideally be preempted by planner setting is_planner_done.
+        # If we reach here, it's a safety net.
+        # It's better if planner_agent_node sets is_planner_done and feedback for max_loops.
+        return "answer_generator_node"
 
-    # Default is to continue planning (which might involve calling tools or thinking)
-    # tools_condition checks if the last message was an AIMessage with tool_calls
-    if tools_condition(state) == "tools":
-         print("  Decision: Tools called by LLM -> Execute Tools")
-         return "tool_executor" # LangGraph's key for ToolNode if AIMessage has tool_calls
-    print("  Decision: Continue Planning -> Planner Agent")
-    return "planner_agent_node"
+    # Priority 3: Check if the last message from planner contains tool calls.
+    last_ai_message = state["messages"][-1] if state["messages"] and isinstance(state["messages"][-1], AIMessage) else None
+    if last_ai_message and hasattr(last_ai_message, "tool_calls") and last_ai_message.tool_calls:
+        print("  Route decision: Planner called tools -> tool_executor")
+        return "tool_executor"
+    
+    # Fallback/Unexpected: If planner is not done, not max_loops, and called no tools.
+    # This state implies the planner LLM might want to "think" more or there's an issue.
+    # For this skeleton, we'll consider this as planner needing to finish.
+    # A more robust agent might loop back to planner or have an explicit "think" state.
+    print("  Route decision: Planner called no tools and not explicitly done (should ideally not happen often if LLM follows prompt) -> answer_generator_node (to conclude)")
+    # To be safe, this should probably go back to planner if not for the risk of tight loop.
+    # If this path is hit, it means the FakeLLM prompt or responses for planner might need adjustment
+    # to always either call tools or explicitly signal "PLANNING_COMPLETE...".
+    # Forcing to answer_generator_node here to prevent potential deadlocks in the skeleton.
+    return "answer_generator_node"
 
 
 # === 7. Assemble Graph ===
 graph_builder = StateGraph(BotState)
-
 graph_builder.add_node("initialise_system", initialise_system_node)
 graph_builder.add_node("planner_agent_node", planner_agent_node)
-graph_builder.add_node("tool_executor", tool_executor) # Standard ToolNode execution
+graph_builder.add_node("tool_executor", tool_executor)
 graph_builder.add_node("answer_generator_node", answer_generator_node)
 
 graph_builder.set_entry_point("initialise_system")
-
 graph_builder.add_edge("initialise_system", "planner_agent_node")
-
 graph_builder.add_conditional_edges(
     "planner_agent_node",
-    tools_condition, # This checks if the last AIMessage has tool_calls
-    {
-        "tools": "tool_executor", # If tool_calls present, execute them
-        "end": "answer_generator_node"  # If no tool_calls (LLM signaled PLANNING_COMPLETE or error)
-                                        # The "end" key from tools_condition means no tools were called by the LLM.
-                                        # We need our own conditional logic here based on "is_planner_done"
-    }
-)
-# Custom conditional edge from planner if tools_condition leads to "end" (no tools called by planner)
-# This should actually be handled by a router *after* planner
-# Let's simplify: Planner output (AIMessage) is checked by `tools_condition`.
-# If tools -> tool_executor. If no tools -> means planner LLM wants to stop or is done.
-# The problem is `tools_condition`'s "end" path implies the graph should end if no tools.
-# We need to route based on our own logic.
-
-# New routing logic:
-graph_builder.add_conditional_edges(
-    "planner_agent_node",
-    should_continue_planning, # Our custom router after planner
-    {
+    route_after_planner,
+    { # path_map: keys are strings returned by route_after_planner
         "tool_executor": "tool_executor",
-        "planner_agent_node": "planner_agent_node", # Should not happen directly here.
         "answer_generator_node": "answer_generator_node"
+        # IMPORTANT: Ensure route_after_planner ONLY returns keys defined here.
+        # If it could return END or "__end__", that must be mapped too:
+        # "__end__": END (or whatever string END is)
     }
 )
+graph_builder.add_edge("tool_executor", "planner_agent_node")
+graph_builder.add_edge("answer_generator_node", END) # Correctly terminate
+
+compiled_graph = graph_builder.compile().with_config(patch_config(None, recursion_limit=25))
 
 
-graph_builder.add_edge("tool_executor", "planner_agent_node") # Always go back to planner after tools
-graph_builder.add_edge("answer_generator_node", END)
-
-compiled_graph = graph_builder.compile().with_config(patch_config(None, recursion_limit=150))
-
-
-# === 8. FastAPI WS stub ===
-# === 8. FastAPI WS stub ===
 app = FastAPI()
-
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
-    session_id = websocket.headers.get("sec-websocket-key", "default_session")
+    session_id = websocket.headers.get("sec-websocket-key", "skeleton_session")
     print(f"\n[WebSocket ({session_id})] New connection.")
 
-    # Initial state for a new session
     # Choose initial_spec: "valid_spec" or "cycle_spec"
-    initial_spec = "valid_spec" # or "cycle_spec"
-    # initial_spec = "cycle_spec"
+    initial_spec_to_use = "valid_spec"
+    # initial_spec_to_use = "cycle_spec"
 
-    initial_state_template: BotState = {
-        "messages": [], "openapi_spec": initial_spec,
-        "api_details": None, "execution_graph": None, "generated_payload_data": None,
-        "is_planner_done": False, "feedback": {}, "final_response": "",
-        "loop_counter": 0, "max_loops": 5, # Reduced for quicker demo
-        "initialised": False
+    # This is the input to the graph for the first run for this session.
+    # It should align with BotState. `initialise_system_node` will set defaults too.
+    initial_graph_input: BotState = {
+        "messages": [HumanMessage(content=f"Hello, please process the API spec: {initial_spec_to_use}")],
+        "openapi_spec": initial_spec_to_use,
+        "api_details": None, "execution_graph": None, "cycle_check_feedback": None,
+        "generated_payload": None, "current_feedback": None,
+        "is_planner_done": False, "final_response": "",
+        "loop_counter": 0, "max_loops": 6, # max_loops set here will be used by initialise_system_node
+        "initialised": False # Will be set to True by initialise_system_node
     }
     
-    print(f"[WebSocket ({session_id})] Kicking off with spec: {initial_spec}")
-    # The first invoke sets up the state for the session via thread_id
-    # No specific input needed for the first run if graph starts from a parameterless node
-    # and initial_state_template provides all necessary fields.
+    print(f"[WebSocket ({session_id})] Kicking off graph with spec: {initial_spec_to_use}")
     
-    # The graph starts with initialise_system. It doesn't need external input.
-    # Then it goes to planner_agent_node. Planner needs messages.
-    # Let's send an initial "start" message.
-    initial_input_for_graph = {"messages": [HumanMessage(content=f"Let's start with spec: {initial_spec}")]}
-    current_session_state = initial_state_template.copy()
-    current_session_state["messages"] = initial_input_for_graph["messages"]
+    accumulated_state_for_logging = initial_graph_input.copy()
 
-
-    # Run the graph until a final response or error
-    full_event_stream = []
     async for event_chunk in compiled_graph.astream(
-        current_session_state, # Pass the initial state merged with first message
+        initial_graph_input, # Provide the full initial state for the session
         config={"configurable": {"thread_id": session_id}}
     ):
-        print(f"[WebSocket ({session_id}) Stream] Node: {list(event_chunk.keys())[0]}")
-        full_event_stream.append(event_chunk)
-        # You could send partial updates to the client here if desired
-
-    # Get the final state
-    final_state = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
+        node_name = list(event_chunk.keys())[0]
+        node_output = event_chunk[node_name]
+        print(f"[WebSocket ({session_id}) Stream] Node: {node_name} | Output keys: {list(node_output.keys()) if isinstance(node_output, dict) else 'N/A'}")
+        # For logging/display, manually update our local copy of state
+        if isinstance(node_output, dict):
+            for key, value in node_output.items():
+                if key == "messages": # Use add_messages for proper handling
+                    accumulated_state_for_logging["messages"] = add_messages(accumulated_state_for_logging.get("messages", []), value)
+                else:
+                    accumulated_state_for_logging[key] = value
     
-    print(f"\n[WebSocket ({session_id})] Initial processing complete. Final state achieved.")
-    print(f"  Final API Details: {'Present' if final_state.get('api_details') else 'Missing'}")
-    print(f"  Final Graph: {'Present' if final_state.get('execution_graph') else 'Missing'}")
-    print(f"  Final Feedback: {final_state.get('feedback')}")
-    print(f"  Final Response: {final_state.get('final_response')}")
+    final_state_after_stream = accumulated_state_for_logging # This is our best guess from stream
+    # Or, to be absolutely sure of the final persisted state for the thread_id:
+    # final_state_after_stream = await compiled_graph.get_state(config={"configurable": {"thread_id": session_id}})
 
-    if final_state.get("final_response"):
-        await websocket.send_text(final_state["final_response"])
+
+    print(f"\n[WebSocket ({session_id})] Graph processing complete.")
+    if final_state_after_stream:
+        print(f"  Final State: api_details: {bool(final_state_after_stream.get('api_details'))}, exec_graph: {bool(final_state_after_stream.get('execution_graph'))}")
+        print(f"  Final Cycle FB: {final_state_after_stream.get('cycle_check_feedback')}, Final Gen Payload: {bool(final_state_after_stream.get('generated_payload'))}")
+        print(f"  Final Current FB: {final_state_after_stream.get('current_feedback')}")
+        final_response_from_state = final_state_after_stream.get("final_response", "No final response explicitly in state. Check logs for summary.")
+        await websocket.send_text(final_response_from_state)
+        print(f"  Sent final response: {final_response_from_state[:100]}...")
     else:
-        await websocket.send_text("Initial processing complete, but no final response generated. Check logs.")
+        await websocket.send_text("Graph processing finished, but final state could not be determined from stream.")
 
     try:
-        # Simplified: This skeleton primarily demonstrates the initial auto-run.
-        # A full conversational loop would be more complex here.
-        # For now, we'll just keep the connection open.
         while True:
-            text = await websocket.receive_text() # Wait for further messages
-            await websocket.send_text(f"Received your message: '{text}'. Conversational follow-up not fully implemented in this skeleton's WebSocket handler after initial run.")
-            # To make it conversational, you'd re-invoke the graph with new HumanMessage:
-            # turn_input = {"messages": [HumanMessage(content=text)]}
-            # async for event_chunk in compiled_graph.astream(turn_input, config={"configurable": {"thread_id": session_id}}): ...
-            # final_state_after_turn = await compiled_graph.ainvoke(None, config={"configurable": {"thread_id": session_id}})
-            # await websocket.send_text(final_state_after_turn.get("final_response", "Continuation response..."))
-
-
-    except WebSocketDisconnect:
-        print(f"[WebSocket ({session_id})] Client disconnected.")
+            text = await websocket.receive_text()
+            await websocket.send_text(f"Received: '{text}'. Conversational follow-up is not part of this auto-run skeleton.")
+    except WebSocketDisconnect: print(f"[WebSocket ({session_id})] Client disconnected.")
     except Exception as e:
         print(f"[WebSocket ({session_id})] Error: {e}")
-        import traceback
-        traceback.print_exc()
         await websocket.close(code=1011, reason=f"Internal server error: {str(e)[:100]}")
-    finally:
-        print(f"[WebSocket ({session_id})] Connection closed.")
-
+    finally: print(f"[WebSocket ({session_id})] Connection closed.")
 
 if __name__ == "__main__":
     import uvicorn
     print("Starting FastAPI server on http://0.0.0.0:8000/ws")
-    print("This version uses a FakeListChatModel to simulate LLM responses and dummy tools.")
-    print("The graph will attempt an initial auto-run based on the 'openapi_spec' in initial_state_template.")
-    print("Observe the console logs for node execution and state changes.")
+    print("Edit 'initial_spec_to_use' in ws_endpoint to 'valid_spec' or 'cycle_spec'.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+Continue with Gemini Advanced
+You've reached your limit on 2.5 Pro (preview) until May 10, 8:08 am. Try Gemini Advanced for higher limits.
+
+Try now
+
 
 
 
